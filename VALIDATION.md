@@ -41,6 +41,14 @@ Evidence is in `validation/` and `snapshots/20261025/`. The reports contain hash
 and scope, not raw firmware, phone logs or credentials. CI checks source-only
 history and the small input-helper fixtures, with read-only permissions and a
 commit-pinned checkout action; it does not build Android or access a phone.
+Hosted GitHub Actions have not run yet because no GitHub repository was created
+or pushed during this preparation.
+
+Historical reviews retain paths and input commit IDs from the original private
+preparation workspace. Use the public `scripts/` entrypoints documented in
+BUILD.md; do not fetch an old maintainer commit from an unrelated upstream URL.
+The actual public dependency contract is baseline.json, the upstream-base
+manifest and patches/index.json. History maps explain filtered input IDs.
 
 ## Not completed or not claimed
 
