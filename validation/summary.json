@@ -1,0 +1,133 @@
+{
+  "readiness": "public-source-collaboration-development-preview",
+  "date": "2026-10-25",
+  "source_only": true,
+  "device_repository_revisions": [
+    {
+      "repository": "android_device_xiaomi_rothko",
+      "path": "device/xiaomi/rothko",
+      "commit": "8b2e46d0ef0bf5c44ce00dc9e0ad4ec73edcb881"
+    },
+    {
+      "repository": "proprietary_vendor_xiaomi_rothko",
+      "path": "vendor/xiaomi/rothko",
+      "commit": "78b5e4aae23386ed72dd667f8385c1894e4e56fe"
+    },
+    {
+      "repository": "android_device_xiaomi_rothko-kernel",
+      "path": "device/xiaomi/rothko-kernel",
+      "commit": "16cc07bee97f025be37fad5646f8b87a5fe8b683"
+    }
+  ],
+  "private_reconstruction": {
+    "device_payloads": 778,
+    "vendor_odm_payloads": 2975,
+    "kernel_artifacts": 581,
+    "total_payloads": 4334,
+    "all_output_hashes_verified": true,
+    "generated_vendor_metadata_files": {
+      "Android.bp": "c9703f2da27d6930f7d5e38a322ae03684a65474b06776c2a7ba92154b580309",
+      "Android.mk": "7a5e9b2a048ce3b454ca66d2be7775eaf808c0cdac69b680a5deeb072ca08eb0",
+      "rothko-vendor.mk": "ce04a5e98dd90e5965bacdc259042a1bc1a6cfe2326f08f3c6336651224d15e5",
+      "BoardConfigVendor.mk": "31932b8ede523a06046fb6287bdaf6495bf50508dd849cb619aec7ea7d61bdec"
+    },
+    "existing_vendor_payloads_used": false,
+    "all_payload_paths_git_ignored": true,
+    "final_populated_checkouts_tracked_clean": true,
+    "android_tool_checkout_reused": true
+  },
+  "platform_patch_application": {
+    "repositories": 12,
+    "commits": 66,
+    "results": [
+      {
+        "path": "frameworks/base",
+        "commits": 28,
+        "expected_tree": "e16051c2b6dbd7e05fe648c91cc69809d7cabb4f",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "frameworks/av",
+        "commits": 11,
+        "expected_tree": "aedd6a1a4d3faa427ff16958909903f345b9e869",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "frameworks/native",
+        "commits": 4,
+        "expected_tree": "3218b036fa980bb08ca1f882591312490dbde464",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "packages/apps/Settings",
+        "commits": 4,
+        "expected_tree": "b44d846ef55235310ad49c11e9bb47301dbe1933",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "packages/apps/LineageParts",
+        "commits": 6,
+        "expected_tree": "6cb58d971661629fd1319c87ecb201378a2b422c",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "packages/modules/Bluetooth",
+        "commits": 1,
+        "expected_tree": "d9e74faf7e5fd4ae957e2253e04137749a3d88f5",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "lineage-sdk",
+        "commits": 4,
+        "expected_tree": "9635645be9da4600bc8d8be0a91b643a45384c3f",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "build/soong",
+        "commits": 2,
+        "expected_tree": "84650f42289b160a77fc5b7ace4cf87153cffca1",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "system/sepolicy",
+        "commits": 2,
+        "expected_tree": "35fd7e6ed36bde548a725bf019e6e8f5351f2179",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "bootable/recovery",
+        "commits": 1,
+        "expected_tree": "b95ca11b02c5db2432239fff2777dab7777f5e87",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "tools/extract-utils",
+        "commits": 1,
+        "expected_tree": "e2fbed1e4c323f3d8bca62f2eace25bdc60b247a",
+        "actual_git_am_tree_matches": true
+      },
+      {
+        "path": "hardware/interfaces",
+        "commits": 2,
+        "expected_tree": "dc20256e85d9a52f49d61088d3f6e15806534fe2",
+        "actual_git_am_tree_matches": true
+      }
+    ],
+    "first_stage_probe_omitted": true
+  },
+  "portable_input_fixture_tests": {
+    "passed_cases": 7,
+    "normal_and_python_optimization_passed": true
+  },
+  "host_lifecycle_checks": {
+    "aod_scenarios": 11,
+    "pickup_groups": 8,
+    "physical_graphics_or_sensor_validation": false
+  },
+  "full_android_sync_performed": false,
+  "clean_full_rom_build_passed": false,
+  "new_runtime_acceptance_passed": false,
+  "official_device_ready": false,
+  "proprietary_payload_redistribution_approved": false,
+  "github_upload_performed": false
+}

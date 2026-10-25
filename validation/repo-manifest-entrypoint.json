@@ -1,0 +1,9 @@
+{
+  "repo_init_succeeded": true,
+  "repo_manifest_parsed": true,
+  "project_count": 1167,
+  "unique_paths": 1167,
+  "full_sync_performed": false,
+  "existing_repo_tool_reused": true,
+  "list_command": "repo list --all --groups all -p"
+}

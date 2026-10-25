@@ -41,6 +41,9 @@ def main():
     plan, seen = [], set()
     for row in recipe['files']:
         target = relative(row['path'])
+        if '.git' in target.parts or not (str(target) in ('Image.lz4', 'dtbo.img', 'kernel.config')
+                or target.parts[0] in ('dtb', 'vendor_ramdisk', 'vendor_dlkm', 'system_dlkm')):
+            raise ValueError('target is outside the declared kernel artifact layout')
         if str(target) in seen:
             raise ValueError('duplicate target')
         seen.add(str(target))

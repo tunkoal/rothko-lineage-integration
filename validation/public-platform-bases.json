@@ -1,0 +1,83 @@
+{
+  "scope": "13 modified/core upstream bases via public GitHub commit API; not all manifest commits",
+  "checks": [
+    {
+      "path": "frameworks/base",
+      "repository": "LineageOS/android_frameworks_base",
+      "base": "1c45e31a86be95f51a94ffd1a5014c3fb2019112",
+      "public_commit_verified": true
+    },
+    {
+      "path": "frameworks/av",
+      "repository": "LineageOS/android_frameworks_av",
+      "base": "b6b36c1fdb3c6ffced822a054fbf035b544f0de2",
+      "public_commit_verified": true
+    },
+    {
+      "path": "frameworks/native",
+      "repository": "LineageOS/android_frameworks_native",
+      "base": "9568531f9be7ae65f260699811f32ec4e461de6e",
+      "public_commit_verified": true
+    },
+    {
+      "path": "packages/apps/Settings",
+      "repository": "LineageOS/android_packages_apps_Settings",
+      "base": "8d8f6486b274bcf0aa6e5d0cbba52c0b05ae5c65",
+      "public_commit_verified": true
+    },
+    {
+      "path": "packages/apps/LineageParts",
+      "repository": "LineageOS/android_packages_apps_LineageParts",
+      "base": "3912d73e14db230c27e86714d2a71c9c16fe6b07",
+      "public_commit_verified": true
+    },
+    {
+      "path": "packages/modules/Bluetooth",
+      "repository": "LineageOS/android_packages_modules_Bluetooth",
+      "base": "03cb8e33c1613feb45d13dd1af1940e1c0149446",
+      "public_commit_verified": true
+    },
+    {
+      "path": "lineage-sdk",
+      "repository": "LineageOS/android_lineage-sdk",
+      "base": "7cca417d57f1ca51399538e5382c701c47d47ea8",
+      "public_commit_verified": true
+    },
+    {
+      "path": "build/soong",
+      "repository": "LineageOS/android_build_soong",
+      "base": "9aa045a2aef10b8089e32e847fed26d9aa3d61be",
+      "public_commit_verified": true
+    },
+    {
+      "path": "system/core",
+      "repository": "LineageOS/android_system_core",
+      "base": "eb2de7321317226bbc1951382b3171fa59bb4d1d",
+      "public_commit_verified": true
+    },
+    {
+      "path": "system/sepolicy",
+      "repository": "LineageOS/android_system_sepolicy",
+      "base": "885cc500f6078a766d1f6def5ce4c06c55841773",
+      "public_commit_verified": true
+    },
+    {
+      "path": "bootable/recovery",
+      "repository": "LineageOS/android_bootable_recovery",
+      "base": "acd99f7c48e0229eaedd40aa3e2adcbabe2dc283",
+      "public_commit_verified": true
+    },
+    {
+      "path": "tools/extract-utils",
+      "repository": "LineageOS/android_tools_extract-utils",
+      "base": "44e3b07397a339c2721c637e40cb73159c78ad46",
+      "public_commit_verified": true
+    },
+    {
+      "path": "hardware/interfaces",
+      "repository": "LineageOS/android_hardware_interfaces",
+      "base": "13d687a84c834af855bfb314b853b8372a7aa6d9",
+      "public_commit_verified": true
+    }
+  ]
+}

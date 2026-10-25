@@ -1,0 +1,21 @@
+{
+  "checks": [
+    {
+      "case": "already-applied-idempotent",
+      "passed": true
+    },
+    {
+      "case": "untracked-work-rejected",
+      "passed": true
+    },
+    {
+      "case": "in-progress-am-rejected",
+      "passed": true
+    },
+    {
+      "case": "patch-hash-drift-rejected",
+      "passed": true
+    }
+  ],
+  "source_fixture_only": true
+}

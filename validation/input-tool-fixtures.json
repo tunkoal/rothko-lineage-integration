@@ -1,0 +1,30 @@
+{
+  "runs": [
+    {
+      "python_optimized": false,
+      "passed": [
+        "kernel-valid",
+        "kernel-unknown-input-no-write",
+        "kernel-source-traversal-no-write",
+        "kernel-existing-output-preserved",
+        "populate-conflict-all-targets-preserved",
+        "populate-valid-and-idempotent",
+        "populate-target-symlink-rejected"
+      ],
+      "phone_access": false
+    },
+    {
+      "python_optimized": true,
+      "passed": [
+        "kernel-valid",
+        "kernel-unknown-input-no-write",
+        "kernel-source-traversal-no-write",
+        "kernel-existing-output-preserved",
+        "populate-conflict-all-targets-preserved",
+        "populate-valid-and-idempotent",
+        "populate-target-symlink-rejected"
+      ],
+      "phone_access": false
+    }
+  ]
+}

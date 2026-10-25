@@ -1,0 +1,28 @@
+{
+  "checks": [
+    {
+      "case": "clean-source-passes",
+      "passed": true,
+      "issue_rules": []
+    },
+    {
+      "case": "binary-and-token-rejected",
+      "passed": true,
+      "issue_rules": [
+        "binary_blob",
+        "excluded_payload_path_in_history",
+        "token"
+      ]
+    },
+    {
+      "case": "deleted-payload-history-still-rejected",
+      "passed": true,
+      "issue_rules": [
+        "binary_blob",
+        "excluded_payload_path_in_history",
+        "token"
+      ]
+    }
+  ],
+  "matched_values_redacted": true
+}

@@ -1,0 +1,164 @@
+{
+  "scope": "selected final-source hooks; not complete display/thermal semantic or runtime audit",
+  "files": [
+    {
+      "path": "frameworks/native/services/surfaceflinger/CompositionEngine/src/DisplayColorExtension.cpp",
+      "sha256": "ca64f268695aed1c25bf98709bcfcffe1373720a8a7f6b30b731236fe8e94637",
+      "markers": {
+        "#ifndef TARGET_PROVIDES_DISPLAY_COLOR_LIB": [
+          8
+        ],
+        "static DisplayColorExtension extension": [
+          12
+        ]
+      }
+    },
+    {
+      "path": "frameworks/native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "sha256": "5ea18cc2902241b056e469ede4c4f6b9fecf36eed0687f19b097675606b81787",
+      "markers": {
+        "colorExtension.isEnabled()": [
+          1103
+        ],
+        "hdrDataSpace == ui::Dataspace::UNKNOWN && devicePolicy.revision != 0": [
+          1182
+        ],
+        "colorExtension.onPolicyRejected": [
+          1195
+        ]
+      }
+    },
+    {
+      "path": "device/xiaomi/rothko/displaycolor/provider/RothkoDisplayColorProvider.cpp",
+      "sha256": "b9fd5d3b23fd258c83bd35944db61207a9854f86a51ccb52d81657d94229e887",
+      "markers": {
+        "std::try_to_lock": [
+          87,
+          246,
+          271
+        ],
+        "if (mRemote && mDirty.exchange": [
+          491
+        ],
+        "remote->setListener": [
+          363
+        ],
+        "mRemote->reportState": [
+          499
+        ],
+        "return {};": [
+          134,
+          138,
+          143
+        ]
+      }
+    },
+    {
+      "path": "device/xiaomi/rothko/displaycolor/aidl/vendor/xiaomi/rothko/display/color/IRothkoDisplayColor.aidl",
+      "sha256": "c7b7b04a4f9c4828a0a833e5185a2fc00859abaa9284ced8df5e662e37e23882",
+      "markers": {
+        "void setListener": [
+          12
+        ],
+        "oneway void reportState": [
+          13
+        ]
+      }
+    },
+    {
+      "path": "frameworks/base/services/core/java/com/android/server/display/brightness/DeviceBrightnessPolicy.java",
+      "sha256": "db40b8845c6f687ce5c0499edf95f2f300a9443fba16639d1d38cef4c6e9efb8",
+      "markers": {
+        "if (name.isEmpty()) return null": [
+          74
+        ],
+        "return new BrightnessCap(0, 0,": [
+          89
+        ]
+      }
+    },
+    {
+      "path": "frameworks/base/services/core/java/com/android/server/display/brightness/clamper/DeviceBrightnessModifier.java",
+      "sha256": "ac66c94d65a2063eba0962f91f9ad751de5cde2ffa65f5024ca4a352aa36e3a1",
+      "markers": {
+        "data.mDisplayId == Display.DEFAULT_DISPLAY": [
+          38
+        ],
+        "if (mPolicy == null) return": [
+          91
+        ],
+        "Math.min(cap, brightnessCap(bounds.maxSdrNits))": [
+          55
+        ],
+        "if (mPolicy != null) mPolicy.stop()": [
+          154
+        ]
+      }
+    },
+    {
+      "path": "device/xiaomi/rothko/brightness/src/org/lineageos/rothko/brightness/RothkoBrightnessPolicy.java",
+      "sha256": "1848af2897a00480289105b4450919782d24209f884fbd2bfbe442a7fa24f596",
+      "markers": {
+        "MAX_AGE_MILLIS = 2500": [
+          37
+        ],
+        "FACTORY_MIN_CAP_NITS = 160f": [
+          39
+        ],
+        "Math.min(thermal, content)": [
+          165
+        ],
+        "Math.min(commonMaxNits, StockOprBrightnessState.NORMAL_MAX_NITS)": [
+          182
+        ]
+      }
+    },
+    {
+      "path": "frameworks/base/services/core/java/com/android/server/display/DisplayDeviceConfig.java",
+      "sha256": "44dc42b3ce8a9736eda08f8ba1ed32d450035c39fed0982d851d411540d4b782",
+      "markers": {
+        "return (mHdrBrightnessData != null && mHdrBrightnessData.sdrToHdrRatioSpline != null)": [
+          1218
+        ]
+      }
+    },
+    {
+      "path": "frameworks/base/services/core/java/com/android/server/display/HighBrightnessModeController.java",
+      "sha256": "01261f704ef18aee8ba13938c47215fe603b9553bf82bef9d6869faa87fa54b0",
+      "markers": {
+        "final boolean noTimeLimit =": [
+          476
+        ],
+        "if (!noTimeLimit && mBrightness > mHbmData.transitionPoint)": [
+          478
+        ]
+      }
+    },
+    {
+      "path": "lineage-sdk/sdk/src/java/lineageos/hardware/LineageHardwareManager.java",
+      "sha256": "fab169c7134c68a120858e408fb3fa37f18f9f52e8dabad9eb97cc7d0044a674",
+      "markers": {
+        "ServiceManager.checkService(": [
+          302
+        ],
+        "Never replay a setter": [
+          712
+        ],
+        "A late death/error from an old service": [
+          614
+        ]
+      }
+    }
+  ],
+  "soong_variables_sha256": "7cc6c612554d93506dce157961afb2a604dabf9f2e6c5b518e6a87d292ab5056",
+  "display_color_lib": "librothko_display_color_provider",
+  "findings": {
+    "report_state_is_oneway": true,
+    "set_listener_is_synchronous": true,
+    "worker_reports_only_when_dirty": true,
+    "display_policy_has_no_time_expiry_field": true,
+    "generic_hdr_ratio_and_hbm_zero_quota_changes_not_device_gated": true
+  },
+  "runtime_verified": false,
+  "clean_build_verified": false
+}

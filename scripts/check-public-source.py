@@ -17,7 +17,10 @@ RULES = {
     'device_serial': re.compile(rb'\bLND[A-Z0-9]{13}\b'),
     'test_phone_ip': re.compile(rb'\b192[.]168[.]31[.]70\b'),
     'binary_patch': re.compile(rb'^GIT binary patch$', re.M),
+    'lfs_payload_pointer': re.compile(rb'^version https://git-lfs[.]github[.]com/spec/v1$', re.M),
 }
+PAYLOAD_SUFFIXES = {'.so', '.apk', '.jar', '.ko', '.img', '.lz4', '.bin', '.dex',
+                    '.a', '.o', '.db', '.ta', '.apex', '.p12', '.pfx', '.key'}
 DEVICE_METADATA = {'prebuilts/audio/Android.bp', 'prebuilts/audio/PROVENANCE.txt',
                    'prebuilts/ims/Android.bp', 'prebuilts/ims/PROVENANCE.txt',
                    'prebuilts/modem/PROVENANCE.txt', 'prebuilts/modem/SHA256SUMS'}
@@ -78,7 +81,8 @@ def main():
     paths = set(git('-c', 'core.quotepath=false', 'log', '--all', '-m', '--root',
                     '--format=', '--name-only', '--no-renames').decode().splitlines()) - {''}
     for path in sorted(paths):
-        forbidden = (a.kind == 'device' and path.startswith('prebuilts/') and path not in DEVICE_METADATA)
+        forbidden = Path(path).suffix.lower() in PAYLOAD_SUFFIXES
+        forbidden |= (a.kind == 'device' and path.startswith('prebuilts/') and path not in DEVICE_METADATA)
         forbidden |= a.kind == 'vendor' and (path.startswith('proprietary/') or path == 'PROVENANCE.json')
         forbidden |= a.kind == 'kernel' and (path.startswith(('vendor_ramdisk/', 'vendor_dlkm/', 'system_dlkm/', 'dtb/'))
                                              or path in ('Image.lz4', 'dtbo.img', 'kernel.config', 'PROVENANCE.json'))

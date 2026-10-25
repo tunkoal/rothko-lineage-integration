@@ -1,0 +1,100 @@
+{
+  "scope": "host production Java compiled against small Android fakes; no Soong/lunch/phone writes",
+  "production_sources": [
+    {
+      "path": "frameworks/base/packages/SystemUI/src/com/android/systemui/doze/DozeSuspendDrawController.java",
+      "sha256": "00edab9b7cf3bd10a99224e40764bfab0b25ee0d0d1731f9b30ae5418dc5b811"
+    },
+    {
+      "path": "frameworks/base/packages/SystemUI/src/com/android/systemui/doze/DozePickupListener.java",
+      "sha256": "1e0d471542454d1f9e21277459b13b41acfa49fae23dedf50abf845d6ae18758"
+    },
+    {
+      "path": "frameworks/base/packages/SystemUI/src/com/android/systemui/doze/DozeSensors.java",
+      "sha256": "ddd032988309bd106dec603192d62984fda5eb3d7c18755ef9c4d5328d6977a4"
+    },
+    {
+      "path": "frameworks/base/packages/SystemUI/src/com/android/systemui/doze/DozeScreenState.java",
+      "sha256": "ea3f1426ce13f597bf5589a0d3363bbd451f45a3e260a1f3848a986311d1070d"
+    },
+    {
+      "path": "frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/DozeServiceHost.java",
+      "sha256": "eef39ce90872e3c22d525a8363ee39cdac321630ebed1f57717557b2ac05fe6e"
+    },
+    {
+      "path": "packages/apps/LineageParts/src/org/lineageos/lineageparts/livedisplay/ColorProfileFragment.java",
+      "sha256": "c8ca8ddd201a438fe6adcaa24bfee7a21bee1b3f30907ab4dc1d9f7db07627b2"
+    },
+    {
+      "path": "packages/apps/Settings/src/com/android/settings/display/ColorModeUtils.kt",
+      "sha256": "1999502cc7bb936a6f8e3da73453a6e187dfa5526535ce8a4ba087aca6210ce6"
+    },
+    {
+      "path": "device/xiaomi/rothko/overlay/frameworks/base/core/res/res/values/config.xml",
+      "sha256": "538f23c93dc07a44ca0ac71162b2096c00fd22a53f8bce6aafe1d4b30df57144"
+    },
+    {
+      "path": "device/xiaomi/rothko/overlay/frameworks/base/packages/SystemUI/res/values/config.xml",
+      "sha256": "d9d2d1470508e92d56e4dbfe0dd618a375e074913a7b092dbff9ff9ff05a560f"
+    }
+  ],
+  "portable_test_tools": [
+    {
+      "path": "source-release/tools/test-doze-draw-host.py",
+      "sha256": "ae4cbf0a515821a228cae13d0d7b83f3705939565c75de0f0d22923c035eda0e"
+    },
+    {
+      "path": "source-release/tools/test-pickup-host.py",
+      "sha256": "9a47738d37c5bad42cfe54bdc3f70e5d7249541ce08a206e70929e72bfb64703"
+    }
+  ],
+  "results": [
+    {
+      "suite": "doze-draw",
+      "passed_scenarios": 11,
+      "stdout": "PASS 11 lifecycle scenarios (host Android fakes; not device/graphics validation)"
+    },
+    {
+      "suite": "pickup",
+      "passed_groups": [
+        "idle/idempotent/filter",
+        "event-copy/pickup-delivery",
+        "cancelled-queued-event/balanced-lock",
+        "stale-listener-after-reregistration",
+        "unrelated-sensor-ignored",
+        "failed-registration/retry",
+        "unsupported-mode/non-wakeup-rejected",
+        "callback-reentrant-disable"
+      ]
+    }
+  ],
+  "portable_preflight_checks": [
+    {
+      "tool": "test-doze-draw-host.py",
+      "case": "existing-output",
+      "exit_code": 2,
+      "output_existence_unchanged": true
+    },
+    {
+      "tool": "test-doze-draw-host.py",
+      "case": "inside-source",
+      "exit_code": 2,
+      "output_existence_unchanged": true
+    },
+    {
+      "tool": "test-pickup-host.py",
+      "case": "existing-output",
+      "exit_code": 2,
+      "output_existence_unchanged": true
+    },
+    {
+      "tool": "test-pickup-host.py",
+      "case": "inside-source",
+      "exit_code": 2,
+      "output_existence_unchanged": true
+    }
+  ],
+  "android_resources_dagger_graphics_hal_verified": false,
+  "candidate_runtime_verified": false,
+  "aod_30hz_verified": false
+}

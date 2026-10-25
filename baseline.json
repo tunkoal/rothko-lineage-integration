@@ -7,17 +7,17 @@
     {
       "repository": "android_device_xiaomi_rothko",
       "path": "device/xiaomi/rothko",
-      "commit": "2e58f332825f82509d51390db5c6885215c5d817"
+      "commit": "8b2e46d0ef0bf5c44ce00dc9e0ad4ec73edcb881"
     },
     {
       "repository": "proprietary_vendor_xiaomi_rothko",
       "path": "vendor/xiaomi/rothko",
-      "commit": "e73cd8d8985bde09109e82be8cf803f8139efd53"
+      "commit": "78b5e4aae23386ed72dd667f8385c1894e4e56fe"
     },
     {
       "repository": "android_device_xiaomi_rothko-kernel",
       "path": "device/xiaomi/rothko-kernel",
-      "commit": "fb30de8d85c8bd23ffd52298479ad74904f9af3d"
+      "commit": "16cc07bee97f025be37fad5646f8b87a5fe8b683"
     }
   ],
   "platform_series": 12,

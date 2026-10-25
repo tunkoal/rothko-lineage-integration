@@ -1,0 +1,52 @@
+{
+  "scope": "six extraction/runtime dependencies via appropriate public GitHub Git transport or AOSP Gitiles; not all manifest projects",
+  "checks": [
+    {
+      "path": "device/mediatek/sepolicy_vndr",
+      "repository": "LineageOS/android_device_mediatek_sepolicy_vndr",
+      "commit": "1b12039600b2ad9b1a435682bc8f61fd1f0b111d",
+      "public_commit_verified": true,
+      "method": "actual-public-git-fetch-shallow-blob-filtered",
+      "git_exit_code": 0
+    },
+    {
+      "path": "hardware/mediatek",
+      "repository": "LineageOS/android_hardware_mediatek",
+      "commit": "68f9be72a32bca66e7c63d69e9739b18f13c8b48",
+      "public_commit_verified": true,
+      "method": "actual-public-git-fetch-shallow-blob-filtered",
+      "git_exit_code": 0
+    },
+    {
+      "path": "hardware/xiaomi",
+      "repository": "LineageOS/android_hardware_xiaomi",
+      "commit": "af5766acc6d6766eddeb52574996247128428ff6",
+      "public_commit_verified": true,
+      "method": "actual-public-git-fetch-shallow-blob-filtered",
+      "git_exit_code": 0
+    },
+    {
+      "path": "prebuilts/extract-tools",
+      "repository": "LineageOS/android_prebuilts_extract-tools",
+      "commit": "a8aabbbe42bdecba4c6d1a9e6e71fbc47de59f96",
+      "public_commit_verified": true,
+      "method": "actual-public-git-fetch-shallow-blob-filtered",
+      "git_exit_code": 0
+    },
+    {
+      "path": "vendor/lineage",
+      "repository": "LineageOS/android_vendor_lineage",
+      "commit": "686d8669737d2207208ea21075320840b5ec8463",
+      "public_commit_verified": true,
+      "method": "actual-public-git-fetch-shallow-blob-filtered",
+      "git_exit_code": 0
+    },
+    {
+      "path": "prebuilts/vndk/v34",
+      "repository": "platform/prebuilts/vndk/v34",
+      "commit": "90559258d3ae430c36eca7f6761058ef07905a86",
+      "public_commit_verified": true,
+      "method": "public-aosp-gitiles-commit"
+    }
+  ]
+}

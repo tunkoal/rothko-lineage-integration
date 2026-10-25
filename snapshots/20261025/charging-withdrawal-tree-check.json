@@ -1,0 +1,19 @@
+{
+  "scope": "exact tracked tree comparison; original history retained",
+  "checks": [
+    {
+      "path": "lineage-sdk",
+      "before_charging_candidate": "8601644f7c96f9bea430c43b2f45ba705e618650",
+      "after_withdrawal": "e988298ba218ed6d803e0e6ca7eab32d02a2d6d4",
+      "tree": "9635645be9da4600bc8d8be0a91b643a45384c3f",
+      "whole_tree_exact": true
+    },
+    {
+      "path": "packages/apps/LineageParts",
+      "before_charging_candidate": "c86e9dc3d1f7237651b5c67ea8c53bb14a1f3988",
+      "after_withdrawal": "fc0e11c2510ac0658381e86c73f31e84811bc4e2",
+      "tree": "6cb58d971661629fd1319c87ecb201378a2b422c",
+      "whole_tree_exact": true
+    }
+  ]
+}

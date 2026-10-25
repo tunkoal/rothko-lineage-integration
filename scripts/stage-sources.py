@@ -35,11 +35,13 @@ def main():
             if git(target, 'rev-parse', 'HEAD') != row['commit'] or git(target, 'status', '--porcelain', '--untracked-files=normal'):
                 raise ValueError('target exists with different revision/work: ' + row['path'])
         else:
-            plan.append((source, target))
-    for source, target in plan:
+            plan.append((source, target, row['commit']))
+    for source, target, expected in plan:
         target.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(['git', 'clone', '--no-local', '--single-branch',
                         '--branch', 'lineage-23.2', str(source), str(target)], check=True)
+        if git(target, 'rev-parse', 'HEAD') != expected:
+            raise RuntimeError('source branch moved during clone; inspect the new checkout')
         # An existing recorded commit remains pinned even if upstream main advances.
     print(f'Staged {len(plan)} source repositories; existing matching checkouts retained')
 

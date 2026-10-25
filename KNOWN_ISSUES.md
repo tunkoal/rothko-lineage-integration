@@ -14,6 +14,7 @@ payload exclusion are additional changes, not already-tested ROM releases.
 | Bluetooth headset microphone/profiles/codecs | Do not infer complete support from media playback; further profile tests needed |
 | Telephony | Local two-way calls validated with available card; China Telecom calls/SMS failures reported, no tester trace available; unresolved |
 | SIM toggle / hotspot 5 GHz and selectable security | User validation passed on an earlier baseline; full combinations not claimed |
+| 5G network options / NR attachment | Missing 5G selection was reported earlier; current per-carrier UI and actual NR attachment need explicit validation |
 | AOD | Intermittent black-screen lifecycle fix is a new candidate; host/draw comparison evidence exists, full idle/suspend/notification/runtime acceptance pending |
 | AOD physical 30 Hz | Unresolved/unverified; neither overlay numbers nor draw lease prove panel 30 Hz |
 | Camera JPEG_R / Ultra HDR | Deferred; prior enabled capture hung; public development configuration still selects IDs 0,1 for the framework route, subject to metadata checks |
@@ -23,6 +24,7 @@ payload exclusion are additional changes, not already-tested ROM releases.
 | GPS | Outdoor satellite acquisition and position validated on an earlier baseline |
 | Accelerometer/light/proximity/vibration/audio recording | Earlier user validation passed; current-round regression still required |
 | zRAM / double-tap / pickup / NFC secure element | Source and/or limited host/stock-control checks; latest unified candidate runtime acceptance pending |
+| Step counter / vendor torch sensor / GPU frequency readout | Investigation was requested; no complete current-baseline acceptance is asserted here |
 | 32-bit applications | Product is 64-bit-only; do not advertise 32-bit compatibility |
 | Kernel and modules | Stock prebuilts are reconstructed locally; corresponding source/build route and official requirements remain unresolved |
 

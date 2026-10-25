@@ -1,5 +1,7 @@
 # rothko LineageOS 23.2 collaboration sources
 
+[中文入口](README.zh-CN.md)
+
 **Unofficial development sources for Redmi K70 Ultra (`rothko`).** This is a
 collaboration baseline, not an official LineageOS device submission or a tested
 ROM release. The system framework is Android 16; the selected stock vendor is

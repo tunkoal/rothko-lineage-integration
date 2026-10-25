@@ -34,6 +34,12 @@ def main():
             raise ValueError('input escapes root')
         if hashlib.sha256(patch.read_bytes()).hexdigest() != row['sha256']:
             raise ValueError('patch checksum differs')
+        for operation in ('rebase-apply', 'rebase-merge', 'CHERRY_PICK_HEAD', 'MERGE_HEAD'):
+            state = Path(git(repo, 'rev-parse', '--git-path', operation).decode().strip())
+            if not state.is_absolute():
+                state = repo / state
+            if state.exists():
+                raise ValueError('repository has an in-progress Git operation: ' + row['path'])
         if git(repo, 'status', '--porcelain', '--untracked-files=normal').strip():
             raise ValueError('repository has local work: ' + row['path'])
         head = git(repo, 'rev-parse', 'HEAD').decode().strip()

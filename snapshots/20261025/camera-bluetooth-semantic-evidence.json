@@ -1,0 +1,197 @@
+{
+  "scope": "static source and existing generated product settings; no phone/runtime read",
+  "files": [
+    {
+      "path": "packages/modules/Bluetooth/system/audio_bluetooth_hw/Android.bp",
+      "sha256": "806ce20fe04ef9d4842a375a9123c6987a4f541c1accbd2514225eed74a2f6b9",
+      "markers": {
+        "use_stock_hal": [
+          25,
+          36
+        ],
+        "enabled: false": [
+          37
+        ]
+      }
+    },
+    {
+      "path": "frameworks/av/camera/ndk/Android.bp",
+      "sha256": "3fb717e55adcda274b7c000fa111e8e3530544126b57195a8461706a94f6fbf3",
+      "markers": {
+        "libcamera2ndk_vendor_rothko": [
+          186
+        ],
+        "ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE": [
+          190
+        ],
+        "android.hardware.camera.common-helper_nogralloc": [
+          192
+        ]
+      }
+    },
+    {
+      "path": "frameworks/av/camera/ndk/include/camera/NdkCameraWindowType.h",
+      "sha256": "48d295fe8539b2da3baf0b2e6cda47b0ddeaecc01e4c9a496f3330cb75a05013",
+      "markers": {
+        "ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE": [
+          49
+        ],
+        "typedef ANativeWindow": [
+          54
+        ]
+      }
+    },
+    {
+      "path": "hardware/interfaces/camera/common/default/Android.bp",
+      "sha256": "6772183dd49d0561229f64032f4fa69d1e3d73768df982b593dd3d81cc79a2fb",
+      "markers": {
+        "android.hardware.camera.common-helper_nogralloc": [
+          45
+        ]
+      }
+    },
+    {
+      "path": "frameworks/av/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp",
+      "sha256": "e885a60c8caefb293582bb1acac294d6c5953378c3409b78832971dfd2e402bb",
+      "markers": {
+        "bool isEnabled": [
+          110
+        ],
+        "base::GetProperty(kCameraIdsProperty": [
+          111
+        ]
+      }
+    },
+    {
+      "path": "frameworks/av/services/camera/libcameraservice/common/aidl/AidlProviderInfo.cpp",
+      "sha256": "1180e3bc7fdb24f5cc8972bc314ed6bd0d9a08e0046bbeee450aa6fe148f830f",
+      "markers": {
+        "mCompositeJpegRDisabled &&": [
+          647
+        ],
+        "deriveCharacteristics(&candidate)": [
+          650
+        ]
+      }
+    },
+    {
+      "path": "frameworks/av/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp",
+      "sha256": "c602d8eef778e5d432677d909d5e2c7297eba2e306b53dea6d0b018cf76872ef",
+      "markers": {
+        "bool JpegRCompositeStream::getNextExpiredInputLocked": [
+          239
+        ],
+        "getNextExpiredInputLocked(&expiredTs)": [
+          577
+        ],
+        "gbLocker.reset()": [
+          499
+        ]
+      }
+    },
+    {
+      "path": "frameworks/av/services/camera/libcameraservice/api2/JpegRCompositeStream.h",
+      "sha256": "05fb0356de70b451ac8e6fc672196208db3a5d73229e76756ed59dd264e97dfd",
+      "markers": {
+        "kInputFrameTimeoutNs": [
+          123
+        ]
+      }
+    },
+    {
+      "path": "frameworks/av/services/camera/libcameraservice/device3/Camera3StreamInterface.h",
+      "sha256": "7aa496eef6b70d64d659999e6ae7f887b38e3fa30ec8248d43071f40ccc5445e",
+      "markers": {
+        "res = _buffer->lockAsync": [
+          164
+        ]
+      }
+    },
+    {
+      "path": "system/sepolicy/private/property_contexts",
+      "sha256": "7d4d969114bdcd7ce537b424c9176b625262f39b41126e1440127bc36dc093c1",
+      "markers": {
+        "ro.camera.compositeJpegRIds": [
+          528
+        ],
+        "ro.camera.compositeJpegRRotateIds": [
+          529
+        ]
+      }
+    },
+    {
+      "path": "device/xiaomi/rothko/system.prop",
+      "sha256": "bd1923df62fa9a727bccbf3e9e442d4cb746ebb0992797242f0ebfcfa59ad8c0",
+      "markers": {
+        "ro.camera.compositeJpegRIds": [
+          3
+        ],
+        "ro.camera.compositeJpegRRotateIds": [
+          5
+        ]
+      }
+    },
+    {
+      "path": "device/xiaomi/rothko/device.mk",
+      "sha256": "37db475b0b22e2602b6eaba5db690cfd515ce7aee859794df81241aef0cef89e",
+      "markers": {
+        "soong_config_set_bool,audio_bluetooth_hw": [
+          74
+        ],
+        "audio.bluetooth.default.rothko": [
+          81
+        ],
+        "libcamera2ndk_vendor_rothko": [
+          29
+        ]
+      }
+    },
+    {
+      "path": "device/xiaomi/rothko/prebuilts/audio/Android.bp",
+      "sha256": "2694bcd58849b4fa9a763f9c00506ed587f03fb68e77d1ff16cafeabc1d47b10",
+      "markers": {
+        "libbluetooth_audio_session_aidl_mtk": [
+          20,
+          53
+        ],
+        "overrides:": [
+          13
+        ]
+      }
+    },
+    {
+      "path": "device/xiaomi/rothko/vendor.prop",
+      "sha256": "c729bf36459e4423801be6e8e55b1fdbdfecfbe7b9703d6730387a6e948ef3e6",
+      "markers": {
+        "persist.bluetooth.a2dp_offload.disabled": [
+          57
+        ]
+      }
+    }
+  ],
+  "product_properties": {
+    "system": {
+      "sha256": "2c69a802c0174fed119e9b2921e56f6b19b8a2975b264645a2f00bee0f6da3dd",
+      "selected_properties": {
+        "ro.camera.compositeJpegRIds": "0,1",
+        "ro.camera.compositeJpegRRotateIds": "0,1"
+      }
+    },
+    "vendor": {
+      "sha256": "f7202535ebbbbae524db4a3a8cefb311483211c3ec8e3af7f0ba8c881d9c1112",
+      "selected_properties": {
+        "persist.bluetooth.a2dp_offload.disabled": "true"
+      }
+    }
+  },
+  "soong_variables": {
+    "sha256": "7cc6c612554d93506dce157961afb2a604dabf9f2e6c5b518e6a87d292ab5056",
+    "audio_bluetooth_hw": {
+      "use_stock_hal": "true"
+    }
+  },
+  "jpeg_r_explicit_opt_in_present": true,
+  "jpeg_r_runtime_entry_not_proven": true,
+  "incomplete_frame_timeout_device_gate_present": false,
+  "clean_build_verified": false
+}

@@ -1,0 +1,21 @@
+{
+  "repositories": [
+    {
+      "kind": "device",
+      "historical_commits_checked": 250,
+      "raw_author_committer_headers_exact": true
+    },
+    {
+      "kind": "vendor",
+      "historical_commits_checked": 49,
+      "raw_author_committer_headers_exact": true
+    },
+    {
+      "kind": "kernel",
+      "historical_commits_checked": 1,
+      "raw_author_committer_headers_exact": true
+    }
+  ],
+  "community_commits_preserved_with_original_ids": 37,
+  "original_repositories_modified": false
+}

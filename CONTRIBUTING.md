@@ -17,6 +17,10 @@ separate, explain why a device extension cannot suffice, show default-device
 behavior and list cross-device effects. Do not squash independent hardware fixes
 into a single platform commit. Rebase against recorded lineage-23.2 bases first.
 
+Preserve file bytes and declared line endings. The source candidates disable
+automatic Git line-ending conversion because extraction inputs and platform
+patches carry exact hashes; do not mass-normalize stock integration files.
+
 Use local source/host checks where relevant and record exactly what they cover.
 Changes to native ABI, Binder lifecycle, suspend, thermal/brightness, IMS or data
 mounts require targeted runtime evidence before being called fixed. Unknown

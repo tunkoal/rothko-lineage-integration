@@ -1,0 +1,76 @@
+{
+  "source_head": "e5e04617427d644cb65f3c8c8e5980c68c443aa1",
+  "base": "b6b36c1fdb3c6ffced822a054fbf035b544f0de2",
+  "scope": "static patch separation, no compilation or runtime test",
+  "source_mutated": false,
+  "variants": [
+    {
+      "name": "face-only",
+      "commits": [
+        "275e22afe79f2a293982b4f94e1aaf09771fe050",
+        "e5e04617427d644cb65f3c8c8e5980c68c443aa1"
+      ],
+      "mbox_sha256": "f1590752758fb65f5473f654bc5452fdc76a38811b37468af81c094858499bb6",
+      "final_tree": "03606bedbb2db04bd687c2a9cbb8ec3a4844d787",
+      "matches_projected_head": true,
+      "changed_paths": [
+        "camera/ndk/Android.bp",
+        "camera/ndk/NdkCameraCaptureSession.cpp",
+        "camera/ndk/NdkCameraCaptureSession.inc",
+        "camera/ndk/NdkCameraDevice.cpp",
+        "camera/ndk/NdkCaptureRequest.cpp",
+        "camera/ndk/impl/ACameraCaptureSession.cpp",
+        "camera/ndk/impl/ACameraCaptureSession.h",
+        "camera/ndk/impl/ACameraCaptureSession.inc",
+        "camera/ndk/impl/ACaptureRequest.h",
+        "camera/ndk/include/camera/NdkCameraCaptureSession.h",
+        "camera/ndk/include/camera/NdkCameraDevice.h",
+        "camera/ndk/include/camera/NdkCameraWindowType.h",
+        "camera/ndk/include/camera/NdkCaptureRequest.h",
+        "camera/ndk/ndk_vendor/impl/ACameraCaptureSessionVendor.h",
+        "camera/ndk/ndk_vendor/impl/ACameraDevice.cpp",
+        "camera/ndk/ndk_vendor/impl/ACameraDevice.h",
+        "camera/ndk/ndk_vendor/impl/ACameraDeviceVendor.inc",
+        "camera/ndk/ndk_vendor/impl/ACaptureRequestVendor.h",
+        "camera/ndk/ndk_vendor/impl/utils.cpp",
+        "camera/ndk/ndk_vendor/impl/utils.h"
+      ],
+      "no_jpeg_r_delta_outside_selected_paths": true
+    },
+    {
+      "name": "face-and-map-error",
+      "commits": [
+        "dbda2f3461f1a4d7dba793eb916731b5fada4462",
+        "275e22afe79f2a293982b4f94e1aaf09771fe050",
+        "e5e04617427d644cb65f3c8c8e5980c68c443aa1"
+      ],
+      "mbox_sha256": "d2632f9e83193731e5c5b658b5a46727d85e41270e16758aeecf3d48ed382cc2",
+      "final_tree": "cfb3db04a1c36ca1b160d74d5809cc7c19f697c9",
+      "matches_projected_head": true,
+      "changed_paths": [
+        "camera/ndk/Android.bp",
+        "camera/ndk/NdkCameraCaptureSession.cpp",
+        "camera/ndk/NdkCameraCaptureSession.inc",
+        "camera/ndk/NdkCameraDevice.cpp",
+        "camera/ndk/NdkCaptureRequest.cpp",
+        "camera/ndk/impl/ACameraCaptureSession.cpp",
+        "camera/ndk/impl/ACameraCaptureSession.h",
+        "camera/ndk/impl/ACameraCaptureSession.inc",
+        "camera/ndk/impl/ACaptureRequest.h",
+        "camera/ndk/include/camera/NdkCameraCaptureSession.h",
+        "camera/ndk/include/camera/NdkCameraDevice.h",
+        "camera/ndk/include/camera/NdkCameraWindowType.h",
+        "camera/ndk/include/camera/NdkCaptureRequest.h",
+        "camera/ndk/ndk_vendor/impl/ACameraCaptureSessionVendor.h",
+        "camera/ndk/ndk_vendor/impl/ACameraDevice.cpp",
+        "camera/ndk/ndk_vendor/impl/ACameraDevice.h",
+        "camera/ndk/ndk_vendor/impl/ACameraDeviceVendor.inc",
+        "camera/ndk/ndk_vendor/impl/ACaptureRequestVendor.h",
+        "camera/ndk/ndk_vendor/impl/utils.cpp",
+        "camera/ndk/ndk_vendor/impl/utils.h",
+        "services/camera/libcameraservice/device3/Camera3StreamInterface.h"
+      ],
+      "no_jpeg_r_delta_outside_selected_paths": true
+    }
+  ]
+}

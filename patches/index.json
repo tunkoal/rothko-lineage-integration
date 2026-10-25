@@ -1,7 +1,7 @@
 {
   "state": "public-collaboration-development-series",
-  "replay_verified": false,
-  "note": "Preserves revert/diagnostic history. Review before publication; replay on recorded base and compare final tree before use.",
+  "replay_verified": true,
+  "note": "Original author-preserving series applied with the public entrypoint on exact clean bases; every final tree matches. No full ROM build or runtime claim.",
   "repositories": [
     {
       "path": "frameworks/base",

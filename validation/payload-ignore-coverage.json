@@ -1,0 +1,17 @@
+{
+  "device": {
+    "payloads": 778,
+    "all_git_ignored": true,
+    "tracked_checkout_clean": true
+  },
+  "vendor": {
+    "payloads": 2975,
+    "all_git_ignored": true,
+    "tracked_checkout_clean": true
+  },
+  "kernel": {
+    "payloads": 581,
+    "all_git_ignored": true,
+    "tracked_checkout_clean": true
+  }
+}

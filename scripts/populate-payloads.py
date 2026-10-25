@@ -43,6 +43,10 @@ def main():
     inputs = {key: getattr(a, key + '_payloads').resolve(strict=True) for key in roots}
     plan, seen = [], set()
     for key, path, expected, mode in rows:
+        relative = rel(path)
+        if '.git' in relative.parts or (key == 'device' and relative.parts[0] != 'prebuilts') \
+                or (key == 'vendor' and relative.parts[0] != 'proprietary'):
+            raise ValueError('target is outside the declared payload layout')
         if (key, path) in seen:
             raise ValueError('duplicate target')
         seen.add((key, path))
@@ -62,6 +66,9 @@ def main():
     if not a.verify_only:
         for source, target, expected, mode in plan:
             if target.exists():
+                if target.is_symlink() or not target.is_file() or sha(target) != expected:
+                    raise ValueError('target changed after preflight')
+                target.chmod(mode)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             # Do not overwrite a file that appeared after preflight.
