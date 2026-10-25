@@ -1,0 +1,440 @@
+{
+  "state": "public-collaboration-development-series",
+  "replay_verified": false,
+  "note": "Preserves revert/diagnostic history. Review before publication; replay on recorded base and compare final tree before use.",
+  "repositories": [
+    {
+      "path": "frameworks/base",
+      "head": "5b396fb5c615f81cfa2c2236429d4b14c220b399",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "1c45e31a86be95f51a94ffd1a5014c3fb2019112",
+      "base": "1c45e31a86be95f51a94ffd1a5014c3fb2019112",
+      "local_commits": 28,
+      "commits": [
+        {
+          "sha": "b4c70b3d541f22bffb10fcd25cf63268caf23b72",
+          "subject": "biometrics: expose opt-in UDFPS lifecycle notifications for devices"
+        },
+        {
+          "sha": "e9b99c47b9b9c566cfe1a47c3de2b02b847cd8f5",
+          "subject": "SystemUI: qualify the UDFPS lifecycle resource package"
+        },
+        {
+          "sha": "e1b060f47a4e4204decc5a97934390977e8d02d3",
+          "subject": "services: retain optional UDFPS observer API for device jars"
+        },
+        {
+          "sha": "43dd358d72888704a84c9142ca2c696a70153b9a",
+          "subject": "SystemUI: honor the screen-off UDFPS configured default"
+        },
+        {
+          "sha": "5b728d20c0ec44ebdd7bdffb080cfc307542b5a2",
+          "subject": "biometrics: expose HAL-owned face enrollment preview properties"
+        },
+        {
+          "sha": "436e28676acd4a0f7838873c66c80e957452ddb1",
+          "subject": "display: Report HDR ratio support from modern brightness configuration"
+        },
+        {
+          "sha": "1501ebbc2c92967b671f295b0319f2b83a4d7362",
+          "subject": "display: Add opt-in fail-closed thermal gating for HDR boost"
+        },
+        {
+          "sha": "e04eeb74cd8645fb7e9ddde3276a06ca53a31e8e",
+          "subject": "fingerprint: Mark the FOD UI ready when the HAL asks (vendor code 22)"
+        },
+        {
+          "sha": "17a2404ed46e53650014b2f46ecfb2cecbee2fad",
+          "subject": "telephony: Protect the MTK carrier express update broadcast"
+        },
+        {
+          "sha": "52fc6b78fe6acbb471faed1331a54a8cc3170b77",
+          "subject": "fingerprint: do not acknowledge display readiness on a vendor acquire event"
+        },
+        {
+          "sha": "4ae0d0a234261e177de101e98059fa81c3bf2b8d",
+          "subject": "SystemUI: wake display for fully-off UDFPS"
+        },
+        {
+          "sha": "51ba33651b56ba32fe7b05753f2cafa704928a53",
+          "subject": "SystemUI: hand off screen-off UDFPS input before leaving doze"
+        },
+        {
+          "sha": "cb3e52708330ba4a8ee5a29aa9634c744e495676",
+          "subject": "SystemUI: restore native doze pulse for screen-off UDFPS"
+        },
+        {
+          "sha": "ed07b7504727a9076eba8e0fb8bd52df8110cc89",
+          "subject": "SystemUI: keep keyguard indications above the UDFPS sensor"
+        },
+        {
+          "sha": "25de1782e0506acc686796cc3dbced5dd81d353c",
+          "subject": "display: add opt-in device thermal brightness policy before HDR clamping"
+        },
+        {
+          "sha": "8bdfe08ac53f41492367ff5934efe38fd91fa6ab",
+          "subject": "display: share actual HDR layer state with optional device brightness policy"
+        },
+        {
+          "sha": "8588a6f513ddae89c08cb381753e5c192cd11456",
+          "subject": "display: keep device SDR white point bounded independently of HDR peak"
+        },
+        {
+          "sha": "9c9a35ab720638eaeb2744f9359a9161544a50af",
+          "subject": "display: distinguish device content bounds from thermal throttling"
+        },
+        {
+          "sha": "dc729ae6c99ae063075e69556ddd5a0407cdeb64",
+          "subject": "display: avoid HBM quota callback loop for all-zero timing"
+        },
+        {
+          "sha": "0a1676db368b6c6c9ee0f69fc263e22cc58e058d",
+          "subject": "display: migrate opt-in per-user brightness across affine backlight ranges"
+        },
+        {
+          "sha": "935658129265548d1fadd86cfe201ed157c6e7ca",
+          "subject": "display: retire interim HDR veto after device cap integration"
+        },
+        {
+          "sha": "a830b1cc8d9eb54ac825333b915e75c8a6cf1516",
+          "subject": "display: respect the common cap in the legacy HDR target path"
+        },
+        {
+          "sha": "0d89a820ad3837b04bd74a9edf7575cf8e25c7ba",
+          "subject": "display: allow an ordered device doze backlight route"
+        },
+        {
+          "sha": "e95aa4b5c4fab6b26953ae28e6839ca7d37fc797",
+          "subject": "display: import framework resources for brightness migration"
+        },
+        {
+          "sha": "1c1e6d358d0c5eaacd86034fe8556575b2bc05e6",
+          "subject": "display: source automatic brightness state from the controller"
+        },
+        {
+          "sha": "ed404a70a9049f463c30b2bb971adf74cb4a2122",
+          "subject": "display: enter native doze before dedicated brightness"
+        },
+        {
+          "sha": "886d9ad4356406363b1b9d0ec658439181731b9b",
+          "subject": "SystemUI: protect opted-in AOD draws until presentation"
+        },
+        {
+          "sha": "5b396fb5c615f81cfa2c2236429d4b14c220b399",
+          "subject": "SystemUI: support opted-in special-trigger pickup sensors"
+        }
+      ],
+      "file": "frameworks__base.mbox",
+      "bytes": 280145,
+      "sha256": "a026cb7ee20ce83805536367145dedba3130c8a93f54ece76a051428d6e538fe",
+      "expected_final_tree": "e16051c2b6dbd7e05fe648c91cc69809d7cabb4f"
+    },
+    {
+      "path": "frameworks/av",
+      "head": "e5e04617427d644cb65f3c8c8e5980c68c443aa1",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "b6b36c1fdb3c6ffced822a054fbf035b544f0de2",
+      "base": "b6b36c1fdb3c6ffced822a054fbf035b544f0de2",
+      "local_commits": 11,
+      "commits": [
+        {
+          "sha": "dbda2f3461f1a4d7dba793eb916731b5fada4462",
+          "subject": "camera: Propagate GraphicBuffer mapping failures"
+        },
+        {
+          "sha": "cbd13a24c5124405aee877e21ec4e891812a1387",
+          "subject": "camera: Add per-device opt-in to API3 JPEG_R composition"
+        },
+        {
+          "sha": "806930246937c3ce33a6e3f8f460bcb2b642ee29",
+          "subject": "camera: Align composite P010 with explicitly pixel-rotated JPEGs"
+        },
+        {
+          "sha": "10764a65d00917e7597233e7fdb88f1ae7fa964b",
+          "subject": "camera: Allow a device stem for the vendor camera NDK client"
+        },
+        {
+          "sha": "c5be6ab346549edab16159b6f9736ba60e69be4d",
+          "subject": "camera: Drop the override from the device vendor client"
+        },
+        {
+          "sha": "598a778800330574cc3eab5c5944e103c6d6387f",
+          "subject": "Revert \"camera: Drop the override from the device vendor client\""
+        },
+        {
+          "sha": "322a8008cc41cc8e45c62be7940eeb83316d8cfc",
+          "subject": "Revert \"camera: Allow a device stem for the vendor camera NDK client\""
+        },
+        {
+          "sha": "275e22afe79f2a293982b4f94e1aaf09771fe050",
+          "subject": "camera: Build a vendor client variant without the gralloc importer"
+        },
+        {
+          "sha": "182c808ffb9220543cbbcdc00df75c712ef6dbaa",
+          "subject": "camera: Include the ultrahdr C API before the C++ header"
+        },
+        {
+          "sha": "acf83ad0f5eb52c05a1fc6a4fb15eb2f11031e2d",
+          "subject": "camera: Fail incomplete JPEG_R frames within a bounded time"
+        },
+        {
+          "sha": "e5e04617427d644cb65f3c8c8e5980c68c443aa1",
+          "subject": "camera: preserve legacy window tokens in the rothko vendor client"
+        }
+      ],
+      "file": "frameworks__av.mbox",
+      "bytes": 122762,
+      "sha256": "8af60428e8cfcff0288391d0a7566dd51fb81469d919878fd44b027830df7b04",
+      "expected_final_tree": "aedd6a1a4d3faa427ff16958909903f345b9e869"
+    },
+    {
+      "path": "frameworks/native",
+      "head": "2352df356015a1a8a4dd3ad47fac3c4b5a5de86d",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "9568531f9be7ae65f260699811f32ec4e461de6e",
+      "base": "9568531f9be7ae65f260699811f32ec4e461de6e",
+      "local_commits": 4,
+      "commits": [
+        {
+          "sha": "6017a9d7df490324c45753b68e7ac116c69843e4",
+          "subject": "libgui: set BLAST dequeue count after releasing initialization lock"
+        },
+        {
+          "sha": "5443a0b29fee221932b1b18917a178e5f7e3c17c",
+          "subject": "surfaceflinger: Add an optional cached display color policy bridge"
+        },
+        {
+          "sha": "7c1985563962e7d4fbf1bb750763c33c012cda88",
+          "subject": "surfaceflinger: Report the chosen dataspace to device color policy"
+        },
+        {
+          "sha": "2352df356015a1a8a4dd3ad47fac3c4b5a5de86d",
+          "subject": "surfaceflinger: Keep native HDR policy while the device intent is cached"
+        }
+      ],
+      "file": "frameworks__native.mbox",
+      "bytes": 37816,
+      "sha256": "b29739642299eaf17b8772c43b17df4227b11501cb9c17c39c3ee448a33ab026",
+      "expected_final_tree": "3218b036fa980bb08ca1f882591312490dbde464"
+    },
+    {
+      "path": "packages/apps/Settings",
+      "head": "a268bed92ab56907e3ecb3b7aac85f3c0dac0559",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "8d8f6486b274bcf0aa6e5d0cbba52c0b05ae5c65",
+      "base": "8d8f6486b274bcf0aa6e5d0cbba52c0b05ae5c65",
+      "local_commits": 4,
+      "commits": [
+        {
+          "sha": "255c912fb6dfee398939acec9c2d9f1638c09da4",
+          "subject": "Face enrollment: supply HAL-owned preview without opening a second camera"
+        },
+        {
+          "sha": "f4638979225aacc5e5707364fe75543c3d5d1865",
+          "subject": "Settings: Route color profiles to the LiveDisplay owner"
+        },
+        {
+          "sha": "adf74488d5c5183c91fca3461e76eb1b6dc21af0",
+          "subject": "Settings: Read the cached face enrollment limit before the callback lands"
+        },
+        {
+          "sha": "a268bed92ab56907e3ecb3b7aac85f3c0dac0559",
+          "subject": "Settings: Match the face enrollment mask to the current theme"
+        }
+      ],
+      "file": "packages__apps__Settings.mbox",
+      "bytes": 55109,
+      "sha256": "a4c3d5138b5cf1a8b0ad3c1a654bb499e626433c9d3252fd7a0da9d927600aec",
+      "expected_final_tree": "b44d846ef55235310ad49c11e9bb47301dbe1933"
+    },
+    {
+      "path": "packages/apps/LineageParts",
+      "head": "fc0e11c2510ac0658381e86c73f31e84811bc4e2",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "3912d73e14db230c27e86714d2a71c9c16fe6b07",
+      "base": "3912d73e14db230c27e86714d2a71c9c16fe6b07",
+      "local_commits": 6,
+      "commits": [
+        {
+          "sha": "0ca0d482c82e71b681d6b1b50b7642a9218a1982",
+          "subject": "LiveDisplay: Read back color profiles asynchronously"
+        },
+        {
+          "sha": "31829059680d3de050a6f3248d2f58ae88635df4",
+          "subject": "LiveDisplay: Keep profile search and summaries consistent"
+        },
+        {
+          "sha": "d9e6433df68b67dbe5e04f77d1971eeef9f25185",
+          "subject": "LiveDisplay: Clear the status summary instead of passing resource id 0"
+        },
+        {
+          "sha": "c86e9dc3d1f7237651b5c67ea8c53bb14a1f3988",
+          "subject": "LiveDisplay: Add titles for the original, vivid and saturated profiles"
+        },
+        {
+          "sha": "5fc35b6ea66ee89257480a84a504485a0214a513",
+          "subject": "Keep charging mode preference unchanged when backend rejects it"
+        },
+        {
+          "sha": "fc0e11c2510ac0658381e86c73f31e84811bc4e2",
+          "subject": "Withdraw charging mode preference candidate"
+        }
+      ],
+      "file": "packages__apps__LineageParts.mbox",
+      "bytes": 24044,
+      "sha256": "88c79e73b894afbabde4904aecf5c4a43bf451ed902708cec1d80ecaabfe74af",
+      "expected_final_tree": "6cb58d971661629fd1319c87ecb201378a2b422c"
+    },
+    {
+      "path": "packages/modules/Bluetooth",
+      "head": "c767f5f3b2f4714255c32f9fe1b8ab1cf98cb9b6",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "03cb8e33c1613feb45d13dd1af1940e1c0149446",
+      "base": "03cb8e33c1613feb45d13dd1af1940e1c0149446",
+      "local_commits": 1,
+      "commits": [
+        {
+          "sha": "c767f5f3b2f4714255c32f9fe1b8ab1cf98cb9b6",
+          "subject": "Bluetooth: Allow devices to disable the AOSP audio HAL"
+        }
+      ],
+      "file": "packages__modules__Bluetooth.mbox",
+      "bytes": 1458,
+      "sha256": "b07f46721fbc9e7c86f35885b68ac335fb7d237d3497d3e8fc37f87ff426d288",
+      "expected_final_tree": "d9e74faf7e5fd4ae957e2253e04137749a3d88f5"
+    },
+    {
+      "path": "lineage-sdk",
+      "head": "e988298ba218ed6d803e0e6ca7eab32d02a2d6d4",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "7cca417d57f1ca51399538e5382c701c47d47ea8",
+      "base": "7cca417d57f1ca51399538e5382c701c47d47ea8",
+      "local_commits": 4,
+      "commits": [
+        {
+          "sha": "8601644f7c96f9bea430c43b2f45ba705e618650",
+          "subject": "hardware: Recover display mode clients after service failures"
+        },
+        {
+          "sha": "7fdff62d4761ec31565a03b81900858664082e88",
+          "subject": "health: Apply charging limit when the previous value is unknown"
+        },
+        {
+          "sha": "b2eb2ed68992f258848b29c85aa9a6f3abfd0644",
+          "subject": "Select charging providers only for implemented control modes"
+        },
+        {
+          "sha": "e988298ba218ed6d803e0e6ca7eab32d02a2d6d4",
+          "subject": "Withdraw local charging control changes after feature cancellation"
+        }
+      ],
+      "file": "lineage-sdk.mbox",
+      "bytes": 28385,
+      "sha256": "b8982481a4482b89038df74730c80900c894a3c39c22b458e59a4307091dfd02",
+      "expected_final_tree": "9635645be9da4600bc8d8be0a91b643a45384c3f"
+    },
+    {
+      "path": "build/soong",
+      "head": "e4403ac5df4159b33bf96a8f8f756baaa2dc823a",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "9aa045a2aef10b8089e32e847fed26d9aa3d61be",
+      "base": "9aa045a2aef10b8089e32e847fed26d9aa3d61be",
+      "local_commits": 2,
+      "commits": [
+        {
+          "sha": "50e5622d6bd3a1ac5ec333d1b035ca9edb5d2f9e",
+          "subject": "ci_tests: Skip host paths from out-of-tree OUT_DIR"
+        },
+        {
+          "sha": "e4403ac5df4159b33bf96a8f8f756baaa2dc823a",
+          "subject": "Allow optional Soong runtime memory limit"
+        }
+      ],
+      "file": "build__soong.mbox",
+      "bytes": 2599,
+      "sha256": "c604e7c98588a315be723c12402df67089b9b55f4a94eaa5a0970d18f39ffd34",
+      "expected_final_tree": "84650f42289b160a77fc5b7ace4cf87153cffca1"
+    },
+    {
+      "path": "system/sepolicy",
+      "head": "db671b4a3bfabd7ec45eaab93f3aa5051a2696c6",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "885cc500f6078a766d1f6def5ce4c06c55841773",
+      "base": "885cc500f6078a766d1f6def5ce4c06c55841773",
+      "local_commits": 2,
+      "commits": [
+        {
+          "sha": "d060d4b1156515ca0dcec48330af181960fc4624",
+          "subject": "sepolicy: Label the optional JPEG_R composition selector"
+        },
+        {
+          "sha": "db671b4a3bfabd7ec45eaab93f3aa5051a2696c6",
+          "subject": "sepolicy: Label the JPEG_R pixel rotation selector"
+        }
+      ],
+      "file": "system__sepolicy.mbox",
+      "bytes": 2584,
+      "sha256": "ad69b0892d59c47b11765a6be968700402c27e33ec2c58cde655a191ee60cbb7",
+      "expected_final_tree": "35fd7e6ed36bde548a725bf019e6e8f5351f2179"
+    },
+    {
+      "path": "bootable/recovery",
+      "head": "28f4853ffbbf0c6f6001f77120de92531d6ce61c",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "acd99f7c48e0229eaedd40aa3e2adcbabe2dc283",
+      "base": "acd99f7c48e0229eaedd40aa3e2adcbabe2dc283",
+      "local_commits": 1,
+      "commits": [
+        {
+          "sha": "28f4853ffbbf0c6f6001f77120de92531d6ce61c",
+          "subject": "recovery: show current log when cache has no readable logs"
+        }
+      ],
+      "file": "bootable__recovery.mbox",
+      "bytes": 987,
+      "sha256": "ed432790622433bbb0f366941c79349b8b8a69a3468be045b99e13c847356b42",
+      "expected_final_tree": "b95ca11b02c5db2432239fff2777dab7777f5e87"
+    },
+    {
+      "path": "tools/extract-utils",
+      "head": "f13e19a95f77e609e0242148b9a18e80c1d96736",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "44e3b07397a339c2721c637e40cb73159c78ad46",
+      "base": "44e3b07397a339c2721c637e40cb73159c78ad46",
+      "local_commits": 1,
+      "commits": [
+        {
+          "sha": "f13e19a95f77e609e0242148b9a18e80c1d96736",
+          "subject": "Respect module aliases for prebuilt etc files"
+        }
+      ],
+      "file": "tools__extract-utils.mbox",
+      "bytes": 1265,
+      "sha256": "e1b13d44906a308d7aa70679c3a6b9d94e1c8469d2c21b491fe568a4e469e8e7",
+      "expected_final_tree": "e2fbed1e4c323f3d8bca62f2eace25bdc60b247a"
+    },
+    {
+      "path": "hardware/interfaces",
+      "head": "e9de474a54acdb57aa25249c023f16162cc28bf4",
+      "upstream_ref": "refs/remotes/lineage/lineage-23.2",
+      "upstream_tip": "13d687a84c834af855bfb314b853b8372a7aa6d9",
+      "base": "13d687a84c834af855bfb314b853b8372a7aa6d9",
+      "local_commits": 2,
+      "commits": [
+        {
+          "sha": "0045e73181d0369628bd8fb41e331e39397a1b73",
+          "subject": "camera: Add a client-only common helper without the gralloc importer"
+        },
+        {
+          "sha": "e9de474a54acdb57aa25249c023f16162cc28bf4",
+          "subject": "camera: Give the client-only helper the headers it uses directly"
+        }
+      ],
+      "file": "hardware__interfaces.mbox",
+      "bytes": 2540,
+      "sha256": "c21bccc8c1f0676851f3ea258e2539067a6b4699b0de869b6c3ddf0983d7d2eb",
+      "expected_final_tree": "dc20256e85d9a52f49d61088d3f6e15806534fe2"
+    }
+  ],
+  "first_stage_probe_omitted": true
+}

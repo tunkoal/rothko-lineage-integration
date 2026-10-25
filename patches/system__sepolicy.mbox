@@ -1,0 +1,47 @@
+From d060d4b1156515ca0dcec48330af181960fc4624 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Fri, 16 Oct 2026 14:10:11 +0800
+Subject: [PATCH 1/2] sepolicy: Label the optional JPEG_R composition selector
+
+Keep the exact string property in camera_config_prop with other ro.camera settings. The default selector remains empty. Policy compilation is deferred to the combined candidate.
+
+Change-Id: I7ac9055232c4abb05d05461d7ba819606824f9f2
+---
+ private/property_contexts | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/private/property_contexts b/private/property_contexts
+index b325c2ff025bfc65de36cfa1366c581046736fc1..bcb4d90bab6fe7fa9117979d7d4d3d22bcb75f64 100644
+--- a/private/property_contexts
++++ b/private/property_contexts
+@@ -525,6 +525,7 @@ ro.camera.enableLazyHal       u:object_r:camera_config_prop:s0 exact bool
+ ro.camera.enableCamera1MaxZsl u:object_r:camera_config_prop:s0 exact bool
+ ro.camera.disableJpegR        u:object_r:camera_config_prop:s0 exact bool
+ ro.camera.enableCompositeAPI0JpegR u:object_r:camera_config_prop:s0 exact bool
++ro.camera.compositeJpegRIds    u:object_r:camera_config_prop:s0 exact string
+ ro.camera.enableVirtualCamera      u:object_r:camera_config_prop:s0 exact bool
+ ro.camera.disableHeicUltraHDR u:object_r:camera_config_prop:s0 exact bool
+ ro.camera.enableSWHEVC        u:object_r:camera_config_prop:s0 exact bool
+
+From db671b4a3bfabd7ec45eaab93f3aa5051a2696c6 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Fri, 16 Oct 2026 14:52:03 +0800
+Subject: [PATCH 2/2] sepolicy: Label the JPEG_R pixel rotation selector
+
+Change-Id: Ib04f5880b78077eaf43e35ec0103ec5b5822a09c
+---
+ private/property_contexts | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/private/property_contexts b/private/property_contexts
+index bcb4d90bab6fe7fa9117979d7d4d3d22bcb75f64..04d97a890ffd62d4f6f07f872d1a25b7fb64e85b 100644
+--- a/private/property_contexts
++++ b/private/property_contexts
+@@ -526,6 +526,7 @@ ro.camera.enableCamera1MaxZsl u:object_r:camera_config_prop:s0 exact bool
+ ro.camera.disableJpegR        u:object_r:camera_config_prop:s0 exact bool
+ ro.camera.enableCompositeAPI0JpegR u:object_r:camera_config_prop:s0 exact bool
+ ro.camera.compositeJpegRIds    u:object_r:camera_config_prop:s0 exact string
++ro.camera.compositeJpegRRotateIds u:object_r:camera_config_prop:s0 exact string
+ ro.camera.enableVirtualCamera      u:object_r:camera_config_prop:s0 exact bool
+ ro.camera.disableHeicUltraHDR u:object_r:camera_config_prop:s0 exact bool
+ ro.camera.enableSWHEVC        u:object_r:camera_config_prop:s0 exact bool

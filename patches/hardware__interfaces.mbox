@@ -1,0 +1,76 @@
+From 0045e73181d0369628bd8fb41e331e39397a1b73 Mon Sep 17 00:00:00 2001
+From: codex <codex@local>
+Date: Sat, 17 Oct 2026 15:59:04 +0800
+Subject: [PATCH 1/2] camera: Add a client-only common helper without the
+ gralloc importer
+
+Change-Id: Icb482ec58c54cf75ffc4a1b12521dd8f2c393504
+---
+ camera/common/default/Android.bp | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/camera/common/default/Android.bp b/camera/common/default/Android.bp
+index ad2c139517c57a7bbc1695edddb7fbec35d227cd..39a88bf6ad8a5c909b9543e553bd51b00b12e4a6 100644
+--- a/camera/common/default/Android.bp
++++ b/camera/common/default/Android.bp
+@@ -39,6 +39,35 @@ cc_library_static {
+     export_shared_lib_headers: ["libui"],
+ }
+ 
++// Client-only variant: HandleImporter (the sole user of libgralloctypes and
++// libui) is provider-side and is not needed by the NDK camera client.
++cc_library_static {
++    name: "android.hardware.camera.common-helper_nogralloc",
++    vendor: true,
++    defaults: ["hidl_defaults"],
++    srcs: [
++        "CameraModule.cpp",
++        "CameraMetadata.cpp",
++        "CameraParameters.cpp",
++        "VendorTagDescriptor.cpp",
++        "Exif.cpp",
++        "SimpleThread.cpp",
++    ],
++    cflags: [
++        "-Werror",
++        "-Wextra",
++        "-Wall",
++    ],
++    shared_libs: [
++        "liblog",
++        "libhardware",
++        "libcamera_metadata",
++        "libexif",
++    ],
++    include_dirs: ["system/media/private/camera/include"],
++    export_include_dirs: ["include"],
++}
++
+ // NOTE: Deprecated module kept for compatibility reasons.
+ // Depend on "android.hardware.camera.common-helper" instead
+ cc_library_static {
+
+From e9de474a54acdb57aa25249c023f16162cc28bf4 Mon Sep 17 00:00:00 2001
+From: codex <codex@local>
+Date: Sat, 17 Oct 2026 17:02:09 +0800
+Subject: [PATCH 2/2] camera: Give the client-only helper the headers it uses
+ directly
+
+Change-Id: I567a7cb7760f7976f45f5927a459c05b20491f70
+---
+ camera/common/default/Android.bp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/camera/common/default/Android.bp b/camera/common/default/Android.bp
+index 39a88bf6ad8a5c909b9543e553bd51b00b12e4a6..edcea1c0297dc6c958e0841cf7dda7e0115baef1 100644
+--- a/camera/common/default/Android.bp
++++ b/camera/common/default/Android.bp
+@@ -63,6 +63,8 @@ cc_library_static {
+         "libhardware",
+         "libcamera_metadata",
+         "libexif",
++        "libutils",
++        "libcutils",
+     ],
+     include_dirs: ["system/media/private/camera/include"],
+     export_include_dirs: ["include"],

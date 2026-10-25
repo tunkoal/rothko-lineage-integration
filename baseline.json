@@ -1,0 +1,30 @@
+{
+  "date": "2026-10-25",
+  "firmware": "OS3.0.307.0.WNNCNXM",
+  "framework": "lineage-23.2 / Android 16",
+  "stock_vendor_api": 34,
+  "device_repositories": [
+    {
+      "repository": "android_device_xiaomi_rothko",
+      "path": "device/xiaomi/rothko",
+      "commit": "2e58f332825f82509d51390db5c6885215c5d817"
+    },
+    {
+      "repository": "proprietary_vendor_xiaomi_rothko",
+      "path": "vendor/xiaomi/rothko",
+      "commit": "e73cd8d8985bde09109e82be8cf803f8139efd53"
+    },
+    {
+      "repository": "android_device_xiaomi_rothko-kernel",
+      "path": "device/xiaomi/rothko-kernel",
+      "commit": "fb30de8d85c8bd23ffd52298479ad74904f9af3d"
+    }
+  ],
+  "platform_series": 12,
+  "platform_commits": 66,
+  "clean_full_rom_build_passed": false,
+  "runtime_acceptance_passed": false,
+  "source_only": true,
+  "first_stage_probe_included": false,
+  "camera_jpeg_r_verified": false
+}

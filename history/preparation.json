@@ -1,0 +1,42 @@
+{
+  "scope": "independent filtered collaboration candidates, not a ROM release",
+  "filter_repo_version": "v2.47.0",
+  "filter_repo_sha256": "67447413e273fc76809289111748870b6f6072f08b17efe94863a92d810b7d94",
+  "filter_repo_upstream_commit": "6f79afc8c90c592a3052e6cc53c2ca8907515bca",
+  "source_repositories_modified": false,
+  "repositories": {
+    "device": {
+      "directory": "android_device_xiaomi_rothko",
+      "source_head": "b4d00128fc4ae850d56a7050d3b8ed6959a8e1f2",
+      "filtered_head": "231321bee7215e8e304510f16858e589663cbbc8",
+      "commits_preserved": 250,
+      "author_and_committer_metadata_exact": true,
+      "tracked_files": 213,
+      "self_contained": true,
+      "unreachable_objects": false,
+      "remote_configured": false
+    },
+    "vendor": {
+      "directory": "proprietary_vendor_xiaomi_rothko",
+      "source_head": "6fc70bf3b472e150c5e618127534181d29b3e1bb",
+      "filtered_head": "e2f06985f23837e5902285132dacb9f0e65e05c3",
+      "commits_preserved": 49,
+      "author_and_committer_metadata_exact": true,
+      "tracked_files": 6,
+      "self_contained": true,
+      "unreachable_objects": false,
+      "remote_configured": false
+    },
+    "kernel": {
+      "directory": "android_device_xiaomi_rothko-kernel",
+      "source_head": "508b696afe5a7c925bae0e0a61067ecfe12d8798",
+      "filtered_head": "d16388b0901007d4940d4690fe4150baa890dac1",
+      "commits_preserved": 1,
+      "author_and_committer_metadata_exact": true,
+      "tracked_files": 1,
+      "self_contained": true,
+      "unreachable_objects": false,
+      "remote_configured": false
+    }
+  }
+}

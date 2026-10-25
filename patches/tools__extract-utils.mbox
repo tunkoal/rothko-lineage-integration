@@ -1,0 +1,25 @@
+From f13e19a95f77e609e0242148b9a18e80c1d96736 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Mon, 5 Oct 2026 03:17:30 +0800
+Subject: [PATCH] Respect module aliases for prebuilt etc files
+
+Enable the existing file_stem_package_name opt-in naming arguments for prebuilt_etc and prebuilt_etc_xml. filename_from_src stays true, so module naming does not alter installed filenames. Regeneration verifies rothko stock Sensors V2 and GNSS V3 fragments keep their original bytes and paths while avoiding flattened Make module-name conflicts.
+
+Change-Id: If723e147aa2ef016a6ca89e7fb6f7ce39052523e
+---
+ extract_utils/makefiles.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/extract_utils/makefiles.py b/extract_utils/makefiles.py
+index 1e0e259ee5b9d7eca48fe20ae88633c6d976265b..e8f2852df797aa5562486d631b0f8a69ea461329 100644
+--- a/extract_utils/makefiles.py
++++ b/extract_utils/makefiles.py
+@@ -409,7 +409,7 @@ def write_etc_package(file: File, builder: FileBpBuilder):
+     else:
+         rule_name = 'prebuilt_etc'
+ 
+-    _, package_name = file_stem_package_name(file, any_extension=True)
++    _, package_name = file_stem_package_name(file, can_have_stem=True, any_extension=True)
+ 
+     (
+         builder.set_rule_name(rule_name)

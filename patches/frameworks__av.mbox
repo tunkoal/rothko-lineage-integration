@@ -1,0 +1,2634 @@
+From dbda2f3461f1a4d7dba793eb916731b5fada4462 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Fri, 16 Oct 2026 13:59:04 +0800
+Subject: [PATCH 01/11] camera: Propagate GraphicBuffer mapping failures
+
+Avoid shadowing the status returned by GraphicBuffer::lockAsync. Callers must receive mapping errors instead of proceeding with an invalid destination pointer. Source reviewed; Android compilation and runtime tests are deferred to the combined rothko candidate.
+
+Change-Id: Ica8bcd0eb0bc8602fa9290af28487fd939294a35
+---
+ .../camera/libcameraservice/device3/Camera3StreamInterface.h    | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/services/camera/libcameraservice/device3/Camera3StreamInterface.h b/services/camera/libcameraservice/device3/Camera3StreamInterface.h
+index f07eb3cf03ce5610ac2158c9b9661aef5676822b..fbd7c5012d4ce308d4e853a7229b0294c078d867 100644
+--- a/services/camera/libcameraservice/device3/Camera3StreamInterface.h
++++ b/services/camera/libcameraservice/device3/Camera3StreamInterface.h
+@@ -161,7 +161,7 @@ public:
+ 
+         status_t res = OK;
+         if (!_locked) {
+-            status_t res =  _buffer->lockAsync(usage, dstBuffer, fenceFd);
++            res = _buffer->lockAsync(usage, dstBuffer, fenceFd);
+             if (res == OK) {
+                 _locked = true;
+             }
+
+From cbd13a24c5124405aee877e21ec4e891812a1387 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Fri, 16 Oct 2026 14:10:04 +0800
+Subject: [PATCH 02/11] camera: Add per-device opt-in to API3 JPEG_R
+ composition
+
+Keep native JPEG_R as the default. For selected provider IDs, derive metadata from real JPEG/P010 capabilities and require concurrent SDR JPEG plus HLG P010. Validate mapped layout and range, preserve the HAL JPEG as the SDR intent, and clean up output buffers on failures.
+
+Source audit and diff checks completed. Test sources cover capability derivation, atomic failure, whole-token selection and range validation. Compilation, test execution and real HAL session/visual validation are deferred to the requested combined candidate. No device opt-in is enabled by this commit.
+
+Change-Id: If94f27edc176340d8e9e462a6500e1e84d66a7e1
+---
+ services/camera/libcameraservice/Android.bp   |   1 +
+ .../api2/JpegRCompositeStream.cpp             |  91 +++++++-
+ .../api2/JpegRCompositeStream.h               |   4 +-
+ .../common/aidl/AidlProviderInfo.cpp          |  17 ++
+ .../camera/libcameraservice/tests/Android.bp  |   1 +
+ .../tests/JpegRCompositeUtilsTest.cpp         | 127 ++++++++++
+ .../utils/JpegRCompositeUtils.cpp             | 221 ++++++++++++++++++
+ .../utils/JpegRCompositeUtils.h               |  32 +++
+ .../utils/SessionConfigurationUtils.cpp       |   8 +-
+ 9 files changed, 490 insertions(+), 12 deletions(-)
+ create mode 100644 services/camera/libcameraservice/tests/JpegRCompositeUtilsTest.cpp
+ create mode 100644 services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp
+ create mode 100644 services/camera/libcameraservice/utils/JpegRCompositeUtils.h
+
+diff --git a/services/camera/libcameraservice/Android.bp b/services/camera/libcameraservice/Android.bp
+index f9cbc0e6d8b29ce4820fe5198bf74bb035a639fa..5c88ef6002b7e3fd568c0bbce9ba279a94b2caa7 100644
+--- a/services/camera/libcameraservice/Android.bp
++++ b/services/camera/libcameraservice/Android.bp
+@@ -205,6 +205,7 @@ cc_library {
+         "utils/AutoConditionLock.cpp",
+         "utils/SchedulingPolicyUtils.cpp",
+         "utils/SessionConfigurationUtils.cpp",
++        "utils/JpegRCompositeUtils.cpp",
+         "utils/SessionConfigurationUtilsHidl.cpp",
+         "utils/TagMonitor.cpp",
+         "utils/LatencyHistogram.cpp",
+diff --git a/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp b/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp
+index b8c9244b8dd3aff0414b1349b5295dfb8d06d57c..7a0c2b13a7ac1e78f9a6393566c18791c3f88643 100644
+--- a/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp
++++ b/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp
+@@ -20,9 +20,12 @@
+ 
+ #include <aidl/android/hardware/camera/device/CameraBlob.h>
+ #include <aidl/android/hardware/camera/device/CameraBlobId.h>
++#include <android-base/scopeguard.h>
++#include <optional>
+ 
+ #include "common/CameraProviderManager.h"
+ #include "utils/SessionConfigurationUtils.h"
++#include "utils/JpegRCompositeUtils.h"
+ 
+ #include <com_android_graphics_libgui_flags.h>
+ #include <gui/CpuConsumer.h>
+@@ -46,6 +49,7 @@ using aidl::android::hardware::camera::device::CameraBlobId;
+ JpegRCompositeStream::JpegRCompositeStream(sp<CameraDeviceBase> device,
+         wp<hardware::camera2::ICameraDeviceCallbacks> cb) :
+         CompositeStream(device, cb),
++        mRequireInternalJpeg(JpegRCompositeUtils::isEnabled(device->getId())),
+         mBlobStreamId(-1),
+         mBlobSurfaceId(-1),
+         mP010StreamId(-1),
+@@ -237,6 +241,25 @@ int64_t JpegRCompositeStream::getNextFailingInputLocked(int64_t *currentTs /*ino
+ 
+ status_t JpegRCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &inputFrame) {
+     status_t res;
++    bool p010FullRange = false;
++    if (mRequireInternalJpeg) {
++        const auto& buffer = inputFrame.p010Buffer;
++        constexpr int kColorMask = HAL_DATASPACE_STANDARD_MASK | HAL_DATASPACE_TRANSFER_MASK;
++        // P010 CPU mapping must expose 16-bit Y and interleaved Cb/Cr. Do not
++        // infer plane locations from the visible height or assume a default range.
++        if (!mSupportInternalJpeg || buffer.format != HAL_PIXEL_FORMAT_YCBCR_P010 ||
++                buffer.width == 0 || buffer.height == 0 || (buffer.width & 1) ||
++                (buffer.height & 1) || buffer.data == nullptr || buffer.dataCb == nullptr ||
++                reinterpret_cast<uintptr_t>(buffer.dataCr) !=
++                        reinterpret_cast<uintptr_t>(buffer.dataCb) + sizeof(uint16_t) ||
++                buffer.chromaStep != 4 || (buffer.stride & 1) || (buffer.chromaStride & 1) ||
++                buffer.stride / 2 < buffer.width || buffer.chromaStride / 2 < buffer.width ||
++                (buffer.dataSpace & kColorMask) != (mP010DataSpace & kColorMask) ||
++                JpegRCompositeUtils::getP010FullRange(buffer.dataSpace, &p010FullRange) != OK) {
++            ALOGE("%s: Invalid API3 P010 layout or dataspace 0x%x", __FUNCTION__, buffer.dataSpace);
++            return BAD_VALUE;
++        }
++    }
+     sp<ANativeWindow> outputANW = mOutputSurface;
+     ANativeWindowBuffer *anb;
+     int fenceFd;
+@@ -256,6 +279,10 @@ status_t JpegRCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
+     } else {
+         maxJpegRBufferSize = inputFrame.p010Buffer.width * inputFrame.p010Buffer.height;
+     }
++    if (mRequireInternalJpeg && (maxJpegRBufferSize <= sizeof(CameraBlob) ||
++            maxJpegRBufferSize > INT32_MAX)) {
++        return BAD_VALUE;
++    }
+ 
+     uint8_t jpegQuality = 100;
+     auto entry = inputFrame.result.find(ANDROID_JPEG_QUALITY);
+@@ -278,19 +305,30 @@ status_t JpegRCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
+     }
+ 
+     sp<GraphicBuffer> gb = GraphicBuffer::from(anb);
+-    GraphicBufferLocker gbLocker(gb);
+-    res = gbLocker.lockAsync(&dstBuffer, fenceFd);
++    // Destroy the mapper lock before returning a dequeued API3 buffer, on both
++    // failure and success. A failed encoder must not leave a buffer outstanding.
++    auto cancelApi3Buffer = base::make_scope_guard([&] {
++        if (mRequireInternalJpeg) {
++            outputANW->cancelBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
++        }
++    });
++    std::optional<GraphicBufferLocker> gbLocker(std::in_place, gb);
++    res = gbLocker->lockAsync(&dstBuffer, fenceFd);
+     if (res != OK) {
+         ALOGE("%s: Error trying to lock output buffer fence: %s (%d)", __FUNCTION__,
+                 strerror(-res), res);
+-        outputANW->cancelBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
++        if (!mRequireInternalJpeg) {
++            outputANW->cancelBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
++        }
+         return res;
+     }
+ 
+     if ((gb->getWidth() < maxJpegRBufferSize) || (gb->getHeight() != 1)) {
+         ALOGE("%s: Blob buffer size mismatch, expected %zux%u received %dx%d", __FUNCTION__,
+                 maxJpegRBufferSize, 1, gb->getWidth(), gb->getHeight());
+-        outputANW->cancelBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
++        if (!mRequireInternalJpeg) {
++            outputANW->cancelBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
++        }
+         return BAD_VALUE;
+     }
+ 
+@@ -307,9 +345,13 @@ status_t JpegRCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
+     // Strides are expected to be in pixels not bytes
+     p010.luma_stride = inputFrame.p010Buffer.stride / 2;
+     p010.chroma_stride = inputFrame.p010Buffer.chromaStride / 2;
++    if (mRequireInternalJpeg) {
++        p010.colorRange = p010FullRange ? UHDR_CR_FULL_RANGE : UHDR_CR_LIMITED_RANGE;
++    }
+ 
+     jpegR.data = dstBuffer;
+-    jpegR.maxLength = maxJpegRBufferSize;
++    jpegR.maxLength = mRequireInternalJpeg
++            ? maxJpegRBufferSize - sizeof(CameraBlob) : maxJpegRBufferSize;
+ 
+     ultrahdr::ultrahdr_transfer_function transferFunction;
+     switch (mP010DynamicRange) {
+@@ -328,10 +370,14 @@ status_t JpegRCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
+         jpeg.length = android::camera2::JpegProcessor::findJpegSize(inputFrame.jpegBuffer.data,
+                 inputFrame.jpegBuffer.width);
+         if (jpeg.length == 0) {
++            if (mRequireInternalJpeg) {
++                return BAD_VALUE;
++            }
+             ALOGW("%s: Failed to find input jpeg size, default to using entire buffer!",
+                     __FUNCTION__);
+             jpeg.length = inputFrame.jpegBuffer.width;
+         }
++        jpeg.maxLength = inputFrame.jpegBuffer.width;
+ 
+         if (mOutputColorSpace == ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_DISPLAY_P3) {
+             jpeg.colorGamut = ultrahdr::ultrahdr_color_gamut::ULTRAHDR_COLORGAMUT_P3;
+@@ -371,7 +417,9 @@ status_t JpegRCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
+     size_t finalJpegRSize = actualJpegRSize + sizeof(CameraBlob);
+     if (finalJpegRSize > maxJpegRBufferSize) {
+         ALOGE("%s: Final jpeg buffer not large enough for the jpeg blob header", __FUNCTION__);
+-        outputANW->cancelBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
++        if (!mRequireInternalJpeg) {
++            outputANW->cancelBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
++        }
+         return NO_MEMORY;
+     }
+ 
+@@ -398,9 +446,13 @@ status_t JpegRCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
+             mFirstRequestLatency = captureLatency;
+         }
+     }
+-    outputANW->queueBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
++    gbLocker.reset();
++    const status_t queueStatus = outputANW->queueBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
++    if (queueStatus == OK) {
++        cancelApi3Buffer.Disable();
++    }
+ 
+-    return res;
++    return mRequireInternalJpeg ? queueStatus : res;
+ }
+ 
+ void JpegRCompositeStream::releaseInputFrameLocked(InputFrame *inputFrame /*out*/) {
+@@ -572,9 +624,16 @@ status_t JpegRCompositeStream::createInternalStreams(const std::vector<SurfaceHo
+     }
+ 
+     deriveDynamicRangeAndDataspace(dynamicProfile, &mP010DynamicRange, &mP010DataSpace);
++    if (mRequireInternalJpeg && (!physicalCameraId.empty() ||
++            (dynamicProfile != ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD &&
++             dynamicProfile != ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HLG10) ||
++            !JpegRCompositeUtils::supportsJpegColorSpace(mStaticInfo, colorSpace))) {
++        return BAD_VALUE;
++    }
+     mSupportInternalJpeg = CameraProviderManager::isConcurrentDynamicRangeCaptureSupported(
+             mStaticInfo, mP010DynamicRange,
+             ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD);
++    if (mRequireInternalJpeg && !mSupportInternalJpeg) return BAD_VALUE;
+ 
+     std::tie(mP010Consumer, mP010Surface) =
+             CpuConsumer::create(/*maxLockedBuffers*/ 1, /*controlledByApp*/ true);
+@@ -744,7 +803,10 @@ void JpegRCompositeStream::onFrameAvailable(const BufferItem& item) {
+             mInputJpegBuffers.push_back(item.mTimestamp);
+             mInputReadyCondition.signal();
+         }
+-    } else if (item.mDataSpace == static_cast<android_dataspace_t>(mP010DataSpace)) {
++    } else if (item.mDataSpace == static_cast<android_dataspace_t>(mP010DataSpace) ||
++            (mRequireInternalJpeg &&
++             (item.mDataSpace & (HAL_DATASPACE_STANDARD_MASK | HAL_DATASPACE_TRANSFER_MASK)) ==
++             (mP010DataSpace & (HAL_DATASPACE_STANDARD_MASK | HAL_DATASPACE_TRANSFER_MASK)))) {
+         ALOGV("%s: P010 buffer with ts: %" PRIu64 " ms. arrived!", __func__,
+                 ns2ms(item.mTimestamp));
+ 
+@@ -822,7 +884,7 @@ bool JpegRCompositeStream::onStreamBufferError(const CaptureResultExtras& result
+ 
+ status_t JpegRCompositeStream::getCompositeStreamInfo(const OutputStreamInfo &streamInfo,
+             const CameraMetadata& staticInfo,
+-            std::vector<OutputStreamInfo>* compositeOutput /*out*/) {
++            std::vector<OutputStreamInfo>* compositeOutput /*out*/, bool requireInternalJpeg) {
+     if (compositeOutput == nullptr) {
+         return BAD_VALUE;
+     }
+@@ -831,6 +893,15 @@ status_t JpegRCompositeStream::getCompositeStreamInfo(const OutputStreamInfo &st
+     deriveDynamicRangeAndDataspace(streamInfo.dynamicRangeProfile, &dynamicRange, &dataSpace);
+ 
+     compositeOutput->clear();
++    if (requireInternalJpeg &&
++            ((streamInfo.dynamicRangeProfile !=
++                    ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD &&
++              streamInfo.dynamicRangeProfile !=
++                    ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HLG10) ||
++             !JpegRCompositeUtils::supportsConcurrentJpeg(staticInfo, dynamicRange) ||
++             !JpegRCompositeUtils::supportsJpegColorSpace(staticInfo, streamInfo.colorSpace))) {
++        return BAD_VALUE;
++    }
+     compositeOutput->push_back({});
+     (*compositeOutput)[0].width = streamInfo.width;
+     (*compositeOutput)[0].height = streamInfo.height;
+diff --git a/services/camera/libcameraservice/api2/JpegRCompositeStream.h b/services/camera/libcameraservice/api2/JpegRCompositeStream.h
+index efd31da83d4e57e8c198d7bc9420f735fd011b55..83201245d5e4afc6531c890388b47a07ce6062c3 100644
+--- a/services/camera/libcameraservice/api2/JpegRCompositeStream.h
++++ b/services/camera/libcameraservice/api2/JpegRCompositeStream.h
+@@ -65,7 +65,8 @@ public:
+ 
+     // Return stream information about the internal camera streams
+     static status_t getCompositeStreamInfo(const OutputStreamInfo &streamInfo,
+-            const CameraMetadata& ch, std::vector<OutputStreamInfo>* compositeOutput /*out*/);
++            const CameraMetadata& ch, std::vector<OutputStreamInfo>* compositeOutput /*out*/,
++            bool requireInternalJpeg = false);
+ 
+     // Get composite stream stats
+     void getStreamStats(hardware::CameraStreamStats* streamStats) override;
+@@ -116,6 +117,7 @@ private:
+     static const auto kJpegRDataSpace =
+         aidl::android::hardware::graphics::common::Dataspace::JPEG_R;
+ 
++    const bool           mRequireInternalJpeg;
+     bool                 mSupportInternalJpeg = false;
+     int64_t              mP010DataSpace = HAL_DATASPACE_BT2020_HLG;
+     int64_t              mP010DynamicRange =
+diff --git a/services/camera/libcameraservice/common/aidl/AidlProviderInfo.cpp b/services/camera/libcameraservice/common/aidl/AidlProviderInfo.cpp
+index 8b66e4c31a8f73e654697ebd6d56b3e3ada07322..9b1398be9a2b4b08345bec8beb619a54af6bee25 100644
+--- a/services/camera/libcameraservice/common/aidl/AidlProviderInfo.cpp
++++ b/services/camera/libcameraservice/common/aidl/AidlProviderInfo.cpp
+@@ -32,6 +32,7 @@
+ #include <filesystem>
+ #include <utils/AttributionAndPermissionUtils.h>
+ #include <utils/SessionConfigurationUtils.h>
++#include <utils/JpegRCompositeUtils.h>
+ #include <utils/Trace.h>
+ 
+ namespace {
+@@ -641,6 +642,22 @@ AidlProviderInfo::AidlDeviceInfo3::AidlDeviceInfo3(
+         }
+     }
+ 
++    // Native JPEG_R remains the default. Device builds may opt specific provider
++    // IDs into API3 composition after validating the P010 + JPEG session contract.
++    if (!CameraProviderManager::kFrameworkJpegRDisabled && mCompositeJpegRDisabled &&
++            camera3::JpegRCompositeUtils::isEnabled(id)) {
++        CameraMetadata candidate(mCameraCharacteristics);
++        res = camera3::JpegRCompositeUtils::deriveCharacteristics(&candidate);
++        if (res == OK) {
++            mCameraCharacteristics = std::move(candidate);
++            mCompositeJpegRDisabled = false;
++            ALOGI("Camera %s: opted into framework API3 JPEG_R composition", id.c_str());
++        } else {
++            ALOGW("Camera %s: cannot derive API3 JPEG_R metadata (%d); retaining native route",
++                    id.c_str(), res);
++        }
++    }
++
+     res = addRotateCropTags();
+     if (OK != res) {
+         ALOGE("%s: Unable to add default SCALER_ROTATE_AND_CROP tags: %s (%d)", __FUNCTION__,
+diff --git a/services/camera/libcameraservice/tests/Android.bp b/services/camera/libcameraservice/tests/Android.bp
+index c528f1e29bad377bbda858bc6878bc46e5c14f38..fdfe679bf2bfe7f8394d5fcffde729a67388a67a 100644
+--- a/services/camera/libcameraservice/tests/Android.bp
++++ b/services/camera/libcameraservice/tests/Android.bp
+@@ -123,6 +123,7 @@ cc_test {
+         "Camera3StreamSplitterTest.cpp",
+         "CameraPermissionsTest.cpp",
+         "CameraProviderManagerTest.cpp",
++        "JpegRCompositeUtilsTest.cpp",
+         "SharedSessionConfigUtilsTest.cpp",
+     ],
+ 
+diff --git a/services/camera/libcameraservice/tests/JpegRCompositeUtilsTest.cpp b/services/camera/libcameraservice/tests/JpegRCompositeUtilsTest.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..108b7381a07f5301629c0a047f5ab3cf54fb414e
+--- /dev/null
++++ b/services/camera/libcameraservice/tests/JpegRCompositeUtilsTest.cpp
+@@ -0,0 +1,127 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include "../utils/JpegRCompositeUtils.h"
++
++#include <gtest/gtest.h>
++#include <iterator>
++#include <system/camera_metadata.h>
++#include <ui/PublicFormat.h>
++#include <vector>
++
++namespace android::camera3::JpegRCompositeUtils {
++namespace {
++constexpr int64_t kStandard = ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD;
++constexpr int64_t kHlg = ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HLG10;
++
++CameraMetadata makeMetadata() {
++    CameraMetadata info;
++    const uint8_t caps[] = {ANDROID_REQUEST_AVAILABLE_CAPABILITIES_DYNAMIC_RANGE_TEN_BIT};
++    const int64_t profiles[] = {kHlg, kStandard | kHlg, 0};
++    const int32_t configs[] = {HAL_PIXEL_FORMAT_BLOB, 640, 480, 0,
++            HAL_PIXEL_FORMAT_YCBCR_P010, 640, 480, 0, HAL_PIXEL_FORMAT_BLOB, 1280, 720, 0};
++    const int64_t minimums[] = {HAL_PIXEL_FORMAT_BLOB, 640, 480, 100,
++            HAL_PIXEL_FORMAT_YCBCR_P010, 640, 480, 110,
++            HAL_PIXEL_FORMAT_BLOB, 1280, 720, 100};
++    const int64_t stalls[] = {HAL_PIXEL_FORMAT_BLOB, 640, 480, 1000,
++            HAL_PIXEL_FORMAT_BLOB, 1280, 720, 1000};
++    const int32_t nativeJpegR[] = {HAL_PIXEL_FORMAT_BLOB, 1280, 720, 0};
++    const int64_t colors[] = {ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_SRGB,
++            static_cast<int64_t>(PublicFormat::JPEG_R), kStandard | kHlg,
++            ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_SRGB,
++            static_cast<int64_t>(PublicFormat::YUV_420_888), kStandard};
++    const int32_t maxSize[] = {1024 * 1024};
++    const int32_t keys[] = {ANDROID_REQUEST_AVAILABLE_CAPABILITIES,
++            ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP,
++            ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS,
++            ANDROID_SCALER_AVAILABLE_MIN_FRAME_DURATIONS,
++            ANDROID_SCALER_AVAILABLE_STALL_DURATIONS,
++            ANDROID_JPEGR_AVAILABLE_JPEG_R_STREAM_CONFIGURATIONS,
++            ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP, ANDROID_JPEG_MAX_SIZE};
++    EXPECT_EQ(OK, info.update(ANDROID_REQUEST_AVAILABLE_CAPABILITIES, caps, std::size(caps)));
++    EXPECT_EQ(OK, info.update(ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP,
++            profiles, std::size(profiles)));
++    EXPECT_EQ(OK, info.update(ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS,
++            configs, std::size(configs)));
++    EXPECT_EQ(OK, info.update(ANDROID_SCALER_AVAILABLE_MIN_FRAME_DURATIONS,
++            minimums, std::size(minimums)));
++    EXPECT_EQ(OK, info.update(ANDROID_SCALER_AVAILABLE_STALL_DURATIONS,
++            stalls, std::size(stalls)));
++    EXPECT_EQ(OK, info.update(ANDROID_JPEGR_AVAILABLE_JPEG_R_STREAM_CONFIGURATIONS,
++            nativeJpegR, std::size(nativeJpegR)));
++    EXPECT_EQ(OK, info.update(ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP,
++            colors, std::size(colors)));
++    EXPECT_EQ(OK, info.update(ANDROID_JPEG_MAX_SIZE, maxSize, std::size(maxSize)));
++    EXPECT_EQ(OK, info.update(ANDROID_REQUEST_AVAILABLE_CHARACTERISTICS_KEYS, keys, std::size(keys)));
++    return info;
++}
++
++std::vector<uint8_t> bytes(CameraMetadata& info) {
++    const auto* buffer = info.getAndLock();
++    const auto* start = reinterpret_cast<const uint8_t*>(buffer);
++    std::vector<uint8_t> result(start, start + get_camera_metadata_size(buffer));
++    info.unlock(buffer);
++    return result;
++}
++
++TEST(JpegRCompositeUtilsTest, CameraIdsMustMatchWholeTokensAndDefaultIsEmpty) {
++    EXPECT_FALSE(containsCameraId("", "0"));
++    EXPECT_FALSE(containsCameraId("0,1", ""));
++    EXPECT_TRUE(containsCameraId("0,1", "1"));
++    EXPECT_FALSE(containsCameraId("10,11", "1"));
++    EXPECT_FALSE(containsCameraId("0,1", "2"));
++}
++
++TEST(JpegRCompositeUtilsTest, KeepsOnlyRealSizeIntersectionAndDoesNotInventJpegColorSpace) {
++    auto info = makeMetadata();
++    ASSERT_EQ(OK, deriveCharacteristics(&info));
++    const CameraMetadata& readOnly = info;
++    auto streams = readOnly.find(ANDROID_JPEGR_AVAILABLE_JPEG_R_STREAM_CONFIGURATIONS);
++    ASSERT_EQ(4u, streams.count);
++    EXPECT_EQ(640, streams.data.i32[1]);
++    EXPECT_EQ(480, streams.data.i32[2]);
++    auto minimums = readOnly.find(ANDROID_JPEGR_AVAILABLE_JPEG_R_MIN_FRAME_DURATIONS);
++    ASSERT_EQ(4u, minimums.count);
++    EXPECT_EQ(110, minimums.data.i64[3]);
++    auto colors = readOnly.find(ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP);
++    ASSERT_EQ(3u, colors.count);
++    EXPECT_EQ(static_cast<int64_t>(PublicFormat::YUV_420_888), colors.data.i64[1]);
++    EXPECT_FALSE(supportsJpegColorSpace(info,
++            ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_SRGB));
++    EXPECT_TRUE(supportsJpegColorSpace(info,
++            ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_UNSPECIFIED));
++}
++
++TEST(JpegRCompositeUtilsTest, FailureLeavesAllNativeMetadataUntouched) {
++    auto info = makeMetadata();
++    ASSERT_EQ(OK, info.erase(ANDROID_SCALER_AVAILABLE_STALL_DURATIONS));
++    const auto before = bytes(info);
++    EXPECT_EQ(BAD_VALUE, deriveCharacteristics(&info));
++    EXPECT_EQ(before, bytes(info));
++}
++
++TEST(JpegRCompositeUtilsTest, RefusesHdrOnlyWithoutConcurrentSdrInsteadOfEnablingApi0) {
++    auto info = makeMetadata();
++    const int64_t profiles[] = {kHlg, kHlg, 0};
++    ASSERT_EQ(OK, info.update(ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP,
++            profiles, std::size(profiles)));
++    const auto before = bytes(info);
++    EXPECT_FALSE(supportsConcurrentJpeg(info, kHlg));
++    EXPECT_EQ(BAD_VALUE, deriveCharacteristics(&info));
++    EXPECT_EQ(before, bytes(info));
++}
++
++TEST(JpegRCompositeUtilsTest, UsesOnlyExplicitFullOrLimitedBufferRanges) {
++    bool full = false;
++    EXPECT_EQ(OK, getP010FullRange(static_cast<android_dataspace>(
++            HAL_DATASPACE_BT2020_HLG | HAL_DATASPACE_RANGE_FULL), &full));
++    EXPECT_TRUE(full);
++    EXPECT_EQ(OK, getP010FullRange(HAL_DATASPACE_BT2020_ITU_HLG, &full));
++    EXPECT_FALSE(full);
++    EXPECT_EQ(BAD_VALUE, getP010FullRange(HAL_DATASPACE_UNKNOWN, &full));
++    EXPECT_EQ(BAD_VALUE, getP010FullRange(HAL_DATASPACE_BT2020_ITU_HLG, nullptr));
++}
++} // namespace
++} // namespace android::camera3::JpegRCompositeUtils
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp b/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..b9e182bc8a65375f342c95d6b5da25e4a48d42fb
+--- /dev/null
++++ b/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp
+@@ -0,0 +1,221 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include "JpegRCompositeUtils.h"
++
++#include <algorithm>
++#include <android-base/properties.h>
++#include <array>
++#include <map>
++#include <set>
++#include <ui/PublicFormat.h>
++#include <vector>
++
++namespace android::camera3::JpegRCompositeUtils {
++namespace {
++constexpr int64_t kStandard = ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD;
++constexpr int64_t kHlg = ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HLG10;
++constexpr std::array<uint32_t, 6> kJpegRTags = {
++        ANDROID_JPEGR_AVAILABLE_JPEG_R_STREAM_CONFIGURATIONS,
++        ANDROID_JPEGR_AVAILABLE_JPEG_R_MIN_FRAME_DURATIONS,
++        ANDROID_JPEGR_AVAILABLE_JPEG_R_STALL_DURATIONS,
++        ANDROID_JPEGR_AVAILABLE_JPEG_R_STREAM_CONFIGURATIONS_MAXIMUM_RESOLUTION,
++        ANDROID_JPEGR_AVAILABLE_JPEG_R_MIN_FRAME_DURATIONS_MAXIMUM_RESOLUTION,
++        ANDROID_JPEGR_AVAILABLE_JPEG_R_STALL_DURATIONS_MAXIMUM_RESOLUTION};
++using Size = std::pair<int32_t, int32_t>;
++
++status_t deriveMode(CameraMetadata* info, bool maximumResolution, std::vector<int32_t>* keys) {
++    const uint32_t configTag = maximumResolution
++            ? ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS_MAXIMUM_RESOLUTION
++            : ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS;
++    const uint32_t minTag = maximumResolution
++            ? ANDROID_SCALER_AVAILABLE_MIN_FRAME_DURATIONS_MAXIMUM_RESOLUTION
++            : ANDROID_SCALER_AVAILABLE_MIN_FRAME_DURATIONS;
++    const uint32_t stallTag = maximumResolution
++            ? ANDROID_SCALER_AVAILABLE_STALL_DURATIONS_MAXIMUM_RESOLUTION
++            : ANDROID_SCALER_AVAILABLE_STALL_DURATIONS;
++    const CameraMetadata& metadata = *info;
++    auto configs = metadata.find(configTag);
++    auto minimums = metadata.find(minTag);
++    auto stalls = metadata.find(stallTag);
++    if (configs.count % 4 || minimums.count % 4 || stalls.count % 4) return BAD_VALUE;
++    if (configs.count == 0) return maximumResolution ? OK : BAD_VALUE;
++
++    std::set<Size> jpegSizes, p010Sizes;
++    for (size_t i = 0; i < configs.count; i += 4) {
++        if (configs.data.i32[i+3] != ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS_OUTPUT) {
++            continue;
++        }
++        Size size{configs.data.i32[i+1], configs.data.i32[i+2]};
++        if (size.first <= 0 || size.second <= 0) return BAD_VALUE;
++        if (configs.data.i32[i] == HAL_PIXEL_FORMAT_BLOB) jpegSizes.insert(size);
++        if (configs.data.i32[i] == HAL_PIXEL_FORMAT_YCBCR_P010) p010Sizes.insert(size);
++    }
++    auto durations = [](const camera_metadata_ro_entry_t& entry, int32_t format) {
++        std::map<Size, int64_t> result;
++        for (size_t i = 0; i < entry.count; i += 4) {
++            if (entry.data.i64[i] == format) {
++                result[{entry.data.i64[i+1], entry.data.i64[i+2]}] = entry.data.i64[i+3];
++            }
++        }
++        return result;
++    };
++    auto jpegMinimums = durations(minimums, HAL_PIXEL_FORMAT_BLOB);
++    auto p010Minimums = durations(minimums, HAL_PIXEL_FORMAT_YCBCR_P010);
++    auto jpegStalls = durations(stalls, HAL_PIXEL_FORMAT_BLOB);
++    std::vector<int32_t> streams;
++    std::vector<int64_t> minDurations, stallDurations;
++    for (const auto& size : p010Sizes) {
++        if (!jpegSizes.count(size)) continue;
++        // Do not advertise a size whose underlying stream timings are absent.
++        if (!jpegMinimums.count(size) || !p010Minimums.count(size) || !jpegStalls.count(size) ||
++                jpegMinimums.at(size) < 0 || p010Minimums.at(size) < 0 || jpegStalls.at(size) < 0) {
++            return BAD_VALUE;
++        }
++        streams.insert(streams.end(), {HAL_PIXEL_FORMAT_BLOB, size.first, size.second,
++                ANDROID_JPEGR_AVAILABLE_JPEG_R_STREAM_CONFIGURATIONS_OUTPUT});
++        minDurations.insert(minDurations.end(), {HAL_PIXEL_FORMAT_BLOB, size.first, size.second,
++                std::max(jpegMinimums.at(size), p010Minimums.at(size))});
++        // As in the upstream composite route, JPEG stall is an approximation;
++        // software gain-map latency still needs device measurement.
++        stallDurations.insert(stallDurations.end(),
++                {HAL_PIXEL_FORMAT_BLOB, size.first, size.second, jpegStalls.at(size)});
++    }
++    if (streams.empty()) return maximumResolution ? OK : BAD_VALUE;
++    size_t offset = maximumResolution ? 3 : 0;
++    status_t res = info->update(kJpegRTags[offset], streams.data(), streams.size());
++    if (res != OK) return res;
++    res = info->update(kJpegRTags[offset+1], minDurations.data(), minDurations.size());
++    if (res != OK) return res;
++    res = info->update(kJpegRTags[offset+2], stallDurations.data(), stallDurations.size());
++    if (res != OK) return res;
++    keys->insert(keys->end(), kJpegRTags.begin() + offset, kJpegRTags.begin() + offset + 3);
++    return OK;
++}
++} // namespace
++
++bool containsCameraId(std::string_view cameraIds, std::string_view cameraId) {
++    if (cameraId.empty()) return false;
++    while (!cameraIds.empty()) {
++        auto end = cameraIds.find(',');
++        if (cameraIds.substr(0, end) == cameraId) return true;
++        if (end == std::string_view::npos) break;
++        cameraIds.remove_prefix(end + 1);
++    }
++    return false;
++}
++
++bool isEnabled(const std::string& cameraId) {
++    return containsCameraId(base::GetProperty(kCameraIdsProperty, ""), cameraId);
++}
++
++bool supportsConcurrentJpeg(const CameraMetadata& info, int64_t profile) {
++    auto caps = info.find(ANDROID_REQUEST_AVAILABLE_CAPABILITIES);
++    if (caps.count == 0 || std::find(caps.data.u8, caps.data.u8 + caps.count,
++            ANDROID_REQUEST_AVAILABLE_CAPABILITIES_DYNAMIC_RANGE_TEN_BIT) ==
++            caps.data.u8 + caps.count) return false;
++    auto profiles = info.find(ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP);
++    if (profiles.count == 0 || profiles.count % 3) return false;
++    for (size_t i = 0; i < profiles.count; i += 3) {
++        if (profiles.data.i64[i] == profile) {
++            return profiles.data.i64[i+1] == 0 || (profiles.data.i64[i+1] & kStandard) != 0;
++        }
++    }
++    return false;
++}
++
++bool supportsJpegColorSpace(const CameraMetadata& info, int32_t colorSpace) {
++    if (colorSpace == ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_UNSPECIFIED) return true;
++    // API3's compressed SDR intent supports sRGB or Display P3, not arbitrary HDR gamuts.
++    if (colorSpace != ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_SRGB &&
++            colorSpace != ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_DISPLAY_P3) return false;
++    auto colors = info.find(ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP);
++    if (colors.count % 3) return false;
++    for (size_t i = 0; i < colors.count; i += 3) {
++        if (colors.data.i64[i] == colorSpace &&
++                (colors.data.i64[i+1] == static_cast<int64_t>(PublicFormat::JPEG) ||
++                 colors.data.i64[i+1] == static_cast<int64_t>(PublicFormat::UNKNOWN)) &&
++                (colors.data.i64[i+2] & kStandard)) return true;
++    }
++    return false;
++}
++
++status_t deriveCharacteristics(CameraMetadata* info) {
++    if (info == nullptr || !supportsConcurrentJpeg(*info, kHlg)) return BAD_VALUE;
++    const CameraMetadata& original = *info;
++    auto keys = original.find(ANDROID_REQUEST_AVAILABLE_CHARACTERISTICS_KEYS);
++    auto maxSize = original.find(ANDROID_JPEG_MAX_SIZE);
++    auto colors = original.find(ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP);
++    if (keys.count == 0 || maxSize.count != 1 || maxSize.data.i32[0] <= 0 || colors.count % 3) {
++        return BAD_VALUE;
++    }
++
++    CameraMetadata candidate(original);
++    std::vector<int32_t> newKeys;
++    for (size_t i = 0; i < keys.count; ++i) {
++        if (std::find(kJpegRTags.begin(), kJpegRTags.end(), keys.data.i32[i]) == kJpegRTags.end()) {
++            newKeys.push_back(keys.data.i32[i]);
++        }
++    }
++    for (uint32_t tag : kJpegRTags) {
++        status_t res = candidate.erase(tag);
++        if (res != OK) return res;
++    }
++    status_t res = deriveMode(&candidate, false, &newKeys);
++    if (res != OK) return res;
++    auto caps = original.find(ANDROID_REQUEST_AVAILABLE_CAPABILITIES);
++    if (std::find(caps.data.u8, caps.data.u8 + caps.count,
++            ANDROID_REQUEST_AVAILABLE_CAPABILITIES_ULTRA_HIGH_RESOLUTION_SENSOR) !=
++            caps.data.u8 + caps.count) {
++        res = deriveMode(&candidate, true, &newKeys);
++        if (res != OK) return res;
++    }
++
++    // Drop native JPEG_R color declarations. Explicit output color support must
++    // come from the HAL JPEG stream; YUV sRGB is not evidence for JPEG sRGB.
++    std::vector<int64_t> newColors;
++    for (size_t i = 0; i < colors.count; i += 3) {
++        if (colors.data.i64[i+1] != static_cast<int64_t>(PublicFormat::JPEG_R)) {
++            newColors.insert(newColors.end(), colors.data.i64 + i, colors.data.i64 + i + 3);
++        }
++    }
++    // STANDARD public JPEG_R requests select internal HLG. Advertise HLG only
++    // in addition to STANDARD; other profiles require separate validation.
++    for (int64_t color : {ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_SRGB,
++                         ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_DISPLAY_P3}) {
++        if (supportsJpegColorSpace(original, color)) {
++            newColors.insert(newColors.end(), {color, static_cast<int64_t>(PublicFormat::JPEG_R),
++                    kStandard | kHlg});
++        }
++    }
++    if (colors.count > 0) {
++        if (newColors.empty()) {
++            res = candidate.erase(ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP);
++            newKeys.erase(std::remove(newKeys.begin(), newKeys.end(),
++                    ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP), newKeys.end());
++        } else {
++            res = candidate.update(ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP,
++                    newColors.data(), newColors.size());
++        }
++        if (res != OK) return res;
++    }
++    std::sort(newKeys.begin(), newKeys.end());
++    newKeys.erase(std::unique(newKeys.begin(), newKeys.end()), newKeys.end());
++    res = candidate.update(ANDROID_REQUEST_AVAILABLE_CHARACTERISTICS_KEYS,
++            newKeys.data(), newKeys.size());
++    if (res != OK) return res;
++    *info = std::move(candidate);
++    return OK;
++}
++
++status_t getP010FullRange(android_dataspace dataSpace, bool* fullRange) {
++    if (fullRange == nullptr) return BAD_VALUE;
++    switch (dataSpace & HAL_DATASPACE_RANGE_MASK) {
++        case HAL_DATASPACE_RANGE_FULL: *fullRange = true; return OK;
++        case HAL_DATASPACE_RANGE_LIMITED: *fullRange = false; return OK;
++        default: return BAD_VALUE;
++    }
++}
++} // namespace android::camera3::JpegRCompositeUtils
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeUtils.h b/services/camera/libcameraservice/utils/JpegRCompositeUtils.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a1a8b0fd8ae7c9e42000e4c29a9cda436e0b8c54
+--- /dev/null
++++ b/services/camera/libcameraservice/utils/JpegRCompositeUtils.h
+@@ -0,0 +1,32 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#pragma once
++
++#include <camera/CameraMetadata.h>
++#include <string>
++#include <string_view>
++#include <system/graphics.h>
++#include <utils/Errors.h>
++
++namespace android::camera3::JpegRCompositeUtils {
++
++// Empty by default. Only explicitly selected provider IDs may replace native JPEG_R.
++inline constexpr char kCameraIdsProperty[] = "ro.camera.compositeJpegRIds";
++bool containsCameraId(std::string_view cameraIds, std::string_view cameraId);
++bool isEnabled(const std::string& cameraId);
++
++bool supportsConcurrentJpeg(const CameraMetadata& info, int64_t profile);
++bool supportsJpegColorSpace(const CameraMetadata& info, int32_t colorSpace);
++
++// Replace native JPEG_R metadata atomically, using only real P010/JPEG capabilities.
++// Requires API3 (P010 + HAL JPEG); never enables the API0 reference fallback.
++status_t deriveCharacteristics(CameraMetadata* info);
++
++// The range comes from the acquired buffer, not the requested stream dataspace.
++// Unknown/extended ranges are rejected instead of being guessed.
++status_t getP010FullRange(android_dataspace dataSpace, bool* fullRange);
++
++} // namespace android::camera3::JpegRCompositeUtils
+diff --git a/services/camera/libcameraservice/utils/SessionConfigurationUtils.cpp b/services/camera/libcameraservice/utils/SessionConfigurationUtils.cpp
+index 6ef037a71d79f58eab38a5e8ef159ee399d99a02..98dbdf7cf4d226aa44e30c0ebeea5ae4fc2d2a20 100644
+--- a/services/camera/libcameraservice/utils/SessionConfigurationUtils.cpp
++++ b/services/camera/libcameraservice/utils/SessionConfigurationUtils.cpp
+@@ -27,6 +27,7 @@
+ #include "SessionConfigurationUtils.h"
+ #include "aidl/android/hardware/graphics/common/Dataspace.h"
+ #include "api2/JpegRCompositeStream.h"
++#include "JpegRCompositeUtils.h"
+ #include "binder/Status.h"
+ #include "common/CameraDeviceBase.h"
+ #include "common/HalConversionsTemplated.h"
+@@ -743,8 +744,13 @@ binder::Status mapStream(
+             ret = camera3::HeicCompositeStream::getCompositeStreamInfo(streamInfo,
+                 deviceInfo, &compositeStreams);
+         } else {
++            const bool requireInternalJpeg = JpegRCompositeUtils::isEnabled(logicalCameraId);
++            if (requireInternalJpeg && !physicalId.empty()) {
++                return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT,
++                        "API3 JPEG_R override does not support physical stream routing");
++            }
+             ret = camera3::JpegRCompositeStream::getCompositeStreamInfo(streamInfo,
+-                deviceInfo, &compositeStreams);
++                deviceInfo, &compositeStreams, requireInternalJpeg);
+         }
+ 
+         if (ret != OK) {
+
+From 806930246937c3ce33a6e3f8f460bcb2b642ee29 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Fri, 16 Oct 2026 14:52:03 +0800
+Subject: [PATCH 03/11] camera: Align composite P010 with explicitly
+ pixel-rotated JPEGs
+
+Change-Id: Iaf025e1182c3af68d15e4b03587730c215f64850
+---
+ services/camera/libcameraservice/Android.bp   |   2 +
+ .../api2/JpegRCompositeStream.cpp             |  18 ++-
+ .../api2/JpegRCompositeStream.h               |   1 +
+ .../camera/libcameraservice/tests/Android.bp  |   1 +
+ .../tests/JpegRCompositeOrientationTest.cpp   | 135 ++++++++++++++++++
+ .../utils/JpegRCompositeOrientation.cpp       |  96 +++++++++++++
+ .../utils/JpegRCompositeOrientation.h         |  23 +++
+ .../utils/JpegRCompositeUtils.cpp             |   5 +
+ .../utils/JpegRCompositeUtils.h               |   2 +
+ 9 files changed, 281 insertions(+), 2 deletions(-)
+ create mode 100644 services/camera/libcameraservice/tests/JpegRCompositeOrientationTest.cpp
+ create mode 100644 services/camera/libcameraservice/utils/JpegRCompositeOrientation.cpp
+ create mode 100644 services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
+
+diff --git a/services/camera/libcameraservice/Android.bp b/services/camera/libcameraservice/Android.bp
+index 5c88ef6002b7e3fd568c0bbce9ba279a94b2caa7..406a9644cb89b1a43fd6e54d8bb9312d22fd1e9c 100644
+--- a/services/camera/libcameraservice/Android.bp
++++ b/services/camera/libcameraservice/Android.bp
+@@ -63,6 +63,7 @@ cc_defaults {
+         "libhidlbase",
+         "libimage_io",
+         "libjpeg",
++        "libjpegdecoder",
+         "libultrahdr",
+         "libmedia_codeclist",
+         "libmedia_omx",
+@@ -206,6 +207,7 @@ cc_library {
+         "utils/SchedulingPolicyUtils.cpp",
+         "utils/SessionConfigurationUtils.cpp",
+         "utils/JpegRCompositeUtils.cpp",
++        "utils/JpegRCompositeOrientation.cpp",
+         "utils/SessionConfigurationUtilsHidl.cpp",
+         "utils/TagMonitor.cpp",
+         "utils/LatencyHistogram.cpp",
+diff --git a/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp b/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp
+index 7a0c2b13a7ac1e78f9a6393566c18791c3f88643..67046b6ccac9dca8439c5e05e5c0cc08ef522e09 100644
+--- a/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp
++++ b/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp
+@@ -26,6 +26,7 @@
+ #include "common/CameraProviderManager.h"
+ #include "utils/SessionConfigurationUtils.h"
+ #include "utils/JpegRCompositeUtils.h"
++#include "utils/JpegRCompositeOrientation.h"
+ 
+ #include <com_android_graphics_libgui_flags.h>
+ #include <gui/CpuConsumer.h>
+@@ -50,6 +51,7 @@ JpegRCompositeStream::JpegRCompositeStream(sp<CameraDeviceBase> device,
+         wp<hardware::camera2::ICameraDeviceCallbacks> cb) :
+         CompositeStream(device, cb),
+         mRequireInternalJpeg(JpegRCompositeUtils::isEnabled(device->getId())),
++        mPixelRotatedJpeg(JpegRCompositeUtils::usesPixelRotatedJpeg(device->getId())),
+         mBlobStreamId(-1),
+         mBlobSurfaceId(-1),
+         mP010StreamId(-1),
+@@ -336,6 +338,7 @@ status_t JpegRCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
+     ultrahdr::jpegr_uncompressed_struct p010;
+     ultrahdr::jpegr_compressed_struct jpegR;
+     ultrahdr::JpegR jpegREncoder;
++    std::unique_ptr<ultrahdr::uhdr_raw_image_ext_t> orientedP010;
+ 
+     p010.height = inputFrame.p010Buffer.height;
+     p010.width = inputFrame.p010Buffer.width;
+@@ -385,6 +388,16 @@ status_t JpegRCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
+             jpeg.colorGamut = ultrahdr::ultrahdr_color_gamut::ULTRAHDR_COLORGAMUT_BT709;
+         }
+ 
++        if (mPixelRotatedJpeg) {
++            auto orientation = inputFrame.result.find(ANDROID_JPEG_ORIENTATION);
++            if (orientation.count != 1) return BAD_VALUE;
++            res = JpegRCompositeUtils::alignP010WithPixelRotatedJpeg(orientation.data.i32[0],
++                    jpeg.data, jpeg.length, &p010, &orientedP010);
++            if (res != OK) {
++                ALOGE("%s: Cannot align API3 P010 with pixel-rotated JPEG (%d)", __FUNCTION__, res);
++                return res;
++            }
++        }
+         res = jpegREncoder.encodeJPEGR(&p010, &jpeg, transferFunction, &jpegR);
+     } else {
+         const uint8_t* exifBuffer = nullptr;
+@@ -860,10 +873,11 @@ status_t JpegRCompositeStream::insertCompositeStreamIds(
+ }
+ 
+ void JpegRCompositeStream::onResultError(const CaptureResultExtras& resultExtras) {
+-    // Processing can continue even in case of result errors.
++    // Processing can continue even in case of result errors on the upstream path.
+     // At the moment Jpeg/R composite stream processing relies mainly on static camera
+     // characteristics data. The actual result data can be used for the jpeg quality but
+-    // in case it is absent we can default to maximum.
++    // in case it is absent we can default to maximum. The opt-in pixel-rotation
++    // path also needs JPEG_ORIENTATION and rejects a frame if it is absent.
+     eraseResult(resultExtras.frameNumber);
+     mSessionStatsBuilder.incResultCounter(true /*dropped*/);
+ }
+diff --git a/services/camera/libcameraservice/api2/JpegRCompositeStream.h b/services/camera/libcameraservice/api2/JpegRCompositeStream.h
+index 83201245d5e4afc6531c890388b47a07ce6062c3..8188d279d7afcfc3fc2285daa7ab20290ca678ba 100644
+--- a/services/camera/libcameraservice/api2/JpegRCompositeStream.h
++++ b/services/camera/libcameraservice/api2/JpegRCompositeStream.h
+@@ -118,6 +118,7 @@ private:
+         aidl::android::hardware::graphics::common::Dataspace::JPEG_R;
+ 
+     const bool           mRequireInternalJpeg;
++    const bool           mPixelRotatedJpeg;
+     bool                 mSupportInternalJpeg = false;
+     int64_t              mP010DataSpace = HAL_DATASPACE_BT2020_HLG;
+     int64_t              mP010DynamicRange =
+diff --git a/services/camera/libcameraservice/tests/Android.bp b/services/camera/libcameraservice/tests/Android.bp
+index fdfe679bf2bfe7f8394d5fcffde729a67388a67a..ab8c121ed575a88ee11cff47bf4ec73fffb75d0d 100644
+--- a/services/camera/libcameraservice/tests/Android.bp
++++ b/services/camera/libcameraservice/tests/Android.bp
+@@ -124,6 +124,7 @@ cc_test {
+         "CameraPermissionsTest.cpp",
+         "CameraProviderManagerTest.cpp",
+         "JpegRCompositeUtilsTest.cpp",
++        "JpegRCompositeOrientationTest.cpp",
+         "SharedSessionConfigUtilsTest.cpp",
+     ],
+ 
+diff --git a/services/camera/libcameraservice/tests/JpegRCompositeOrientationTest.cpp b/services/camera/libcameraservice/tests/JpegRCompositeOrientationTest.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..865f2f7e823bbcc66278e5b5f7c02d05025149a2
+--- /dev/null
++++ b/services/camera/libcameraservice/tests/JpegRCompositeOrientationTest.cpp
+@@ -0,0 +1,135 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include "../utils/JpegRCompositeOrientation.h"
++
++#include <array>
++#include <cstdlib>
++#include <cstdio>
++#include <gtest/gtest.h>
++#include <jpeglib.h>
++#include <vector>
++
++namespace android::camera3::JpegRCompositeUtils {
++namespace {
++
++// A real, small RGB JPEG with an optional explicit TIFF orientation. No private
++// photographs are included in the test. Only JPEG headers are used by alignment.
++std::vector<uint8_t> makeJpeg(unsigned int width, unsigned int height, int exifOrientation) {
++    jpeg_compress_struct encoder{};
++    jpeg_error_mgr error{};
++    encoder.err = jpeg_std_error(&error);
++    jpeg_create_compress(&encoder);
++    unsigned char* bytes = nullptr;
++    unsigned long size = 0;
++    jpeg_mem_dest(&encoder, &bytes, &size);
++    encoder.image_width = width;
++    encoder.image_height = height;
++    encoder.input_components = 3;
++    encoder.in_color_space = JCS_RGB;
++    jpeg_set_defaults(&encoder);
++    jpeg_start_compress(&encoder, TRUE);
++    if (exifOrientation >= 0) {
++        const uint8_t exif[] = {'E', 'x', 'i', 'f', 0, 0, 'I', 'I', 42, 0, 8, 0, 0, 0,
++                1, 0, 0x12, 1, 3, 0, 1, 0, 0, 0,
++                static_cast<uint8_t>(exifOrientation), 0, 0, 0, 0, 0, 0, 0};
++        jpeg_write_marker(&encoder, JPEG_APP0 + 1, exif, sizeof(exif));
++    }
++    std::vector<uint8_t> row(width * 3, 128);
++    while (encoder.next_scanline < height) {
++        JSAMPROW ptr = row.data();
++        jpeg_write_scanlines(&encoder, &ptr, 1);
++    }
++    jpeg_finish_compress(&encoder);
++    std::vector<uint8_t> result(bytes, bytes + size);
++    jpeg_destroy_compress(&encoder);
++    free(bytes);
++    return result;
++}
++
++struct Input {
++    // Visible 4x2, with stride padding that must not become image pixels.
++    alignas(4) std::array<uint16_t, 16> y{64, 128, 192, 256, 999, 999, 999, 999,
++            320, 384, 448, 512, 999, 999, 999, 999};
++    alignas(4) std::array<uint16_t, 8> uv{704, 768, 1344, 1408, 999, 999, 999, 999};
++    ultrahdr::jpegr_uncompressed_struct raw{};
++    Input() {
++        raw.width = 4;
++        raw.height = 2;
++        raw.data = y.data();
++        raw.chroma_data = uv.data();
++        raw.luma_stride = raw.chroma_stride = 8;
++        raw.colorGamut = ultrahdr::ULTRAHDR_COLORGAMUT_BT2100;
++        raw.colorRange = UHDR_CR_FULL_RANGE;
++    }
++};
++
++TEST(JpegRCompositeOrientationTest, RotatesBothPlanesAndPreservesCompressedBaseAndRange) {
++    const std::array<int, 4> angles{0, 90, 180, 270};
++    const std::array<std::array<uint16_t, 8>, 4> expectedY{{
++            {64, 128, 192, 256, 320, 384, 448, 512},
++            {320, 64, 384, 128, 448, 192, 512, 256},
++            {512, 448, 384, 320, 256, 192, 128, 64},
++            {256, 512, 192, 448, 128, 384, 64, 320}}};
++    const std::array<std::array<uint16_t, 4>, 4> expectedUV{{
++            {704, 768, 1344, 1408}, {704, 768, 1344, 1408},
++            {1344, 1408, 704, 768}, {1344, 1408, 704, 768}}};
++    for (size_t index = 0; index < angles.size(); ++index) {
++        for (int mirror : {0, 1, 2}) {
++            Input input;
++            const bool swap = angles[index] == 90 || angles[index] == 270;
++            const unsigned int width = swap ? 2 : 4, height = swap ? 4 : 2;
++            auto jpeg = makeJpeg(width, height, mirror);
++            const auto savedJpeg = jpeg;
++            std::unique_ptr<ultrahdr::uhdr_raw_image_ext_t> storage;
++            ASSERT_EQ(OK, alignP010WithPixelRotatedJpeg(angles[index], jpeg.data(), jpeg.size(),
++                    &input.raw, &storage));
++            ASSERT_EQ(width, input.raw.width);
++            ASSERT_EQ(height, input.raw.height);
++            EXPECT_EQ(UHDR_CR_FULL_RANGE, input.raw.colorRange);
++            const auto* y = static_cast<uint16_t*>(input.raw.data);
++            const auto* uv = static_cast<uint16_t*>(input.raw.chroma_data);
++            for (unsigned int row = 0; row < height; ++row) {
++                for (unsigned int col = 0; col < width; ++col) {
++                    EXPECT_EQ(expectedY[index][row * width + col],
++                            y[row * input.raw.luma_stride + col]);
++                }
++            }
++            for (unsigned int row = 0; row < height / 2; ++row) {
++                for (unsigned int col = 0; col < width; ++col) {
++                    EXPECT_EQ(expectedUV[index][row * width + col],
++                            uv[row * input.raw.chroma_stride + col]);
++                }
++            }
++            EXPECT_EQ(savedJpeg, jpeg);
++        }
++    }
++}
++
++TEST(JpegRCompositeOrientationTest, RejectsContradictoryOrMissingOrientationWithoutMutation) {
++    for (int exif : {-1, 3, 5, 6, 7, 8}) {
++        Input input;
++        auto jpeg = makeJpeg(2, 4, exif);
++        const auto* original = input.raw.data;
++        std::unique_ptr<ultrahdr::uhdr_raw_image_ext_t> storage;
++        EXPECT_EQ(BAD_VALUE, alignP010WithPixelRotatedJpeg(90, jpeg.data(), jpeg.size(),
++                &input.raw, &storage));
++        EXPECT_EQ(original, input.raw.data);
++        EXPECT_EQ(nullptr, storage);
++    }
++    Input input;
++    auto jpeg = makeJpeg(4, 2, 1);
++    std::unique_ptr<ultrahdr::uhdr_raw_image_ext_t> storage;
++    EXPECT_EQ(BAD_VALUE, alignP010WithPixelRotatedJpeg(90, jpeg.data(), jpeg.size(),
++            &input.raw, &storage));
++    EXPECT_EQ(BAD_VALUE, alignP010WithPixelRotatedJpeg(45, jpeg.data(), jpeg.size(),
++            &input.raw, &storage));
++    input.raw.chroma_stride = 5;
++    EXPECT_EQ(BAD_VALUE, alignP010WithPixelRotatedJpeg(0, jpeg.data(), jpeg.size(),
++            &input.raw, &storage));
++}
++
++} // namespace
++} // namespace android::camera3::JpegRCompositeUtils
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeOrientation.cpp b/services/camera/libcameraservice/utils/JpegRCompositeOrientation.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..0cbb49d879b0fabb014a4050c241ad2dd3f56f0b
+--- /dev/null
++++ b/services/camera/libcameraservice/utils/JpegRCompositeOrientation.cpp
+@@ -0,0 +1,96 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include "JpegRCompositeOrientation.h"
++
++#include <libexif/exif-data.h>
++#include <libexif/exif-utils.h>
++#include <limits>
++#include <ultrahdr/editorhelper.h>
++#include <ultrahdr/jpegdecoderhelper.h>
++
++namespace android::camera3::JpegRCompositeUtils {
++
++status_t alignP010WithPixelRotatedJpeg(int32_t orientation, const void* jpeg, size_t jpegSize,
++        ultrahdr::jpegr_uncompressed_struct* p010,
++        std::unique_ptr<ultrahdr::uhdr_raw_image_ext_t>* storage) {
++    if (p010 == nullptr || storage == nullptr || *storage != nullptr || jpeg == nullptr ||
++            jpegSize == 0 || jpegSize > std::numeric_limits<unsigned int>::max() ||
++            p010->data == nullptr || p010->chroma_data == nullptr ||
++            p010->width == 0 || p010->height == 0 || (p010->width & 1) || (p010->height & 1) ||
++            p010->width > static_cast<unsigned int>(ultrahdr::kMaxWidth) ||
++            p010->height > static_cast<unsigned int>(ultrahdr::kMaxHeight) ||
++            p010->luma_stride < p010->width || p010->chroma_stride < p010->width ||
++            (p010->chroma_stride & 1) ||
++            reinterpret_cast<uintptr_t>(p010->chroma_data) % alignof(uint32_t) != 0 ||
++            (p010->colorRange != UHDR_CR_FULL_RANGE &&
++             p010->colorRange != UHDR_CR_LIMITED_RANGE) ||
++            (orientation != 0 && orientation != 90 && orientation != 180 && orientation != 270)) {
++        return BAD_VALUE;
++    }
++
++    ultrahdr::JpegDecoderHelper decoder;
++    if (decoder.parseImage(jpeg, jpegSize).error_code != UHDR_CODEC_OK) return BAD_VALUE;
++    const bool swapDimensions = orientation == 90 || orientation == 270;
++    const auto width = swapDimensions ? p010->height : p010->width;
++    const auto height = swapDimensions ? p010->width : p010->height;
++    if (decoder.getDecompressedImageWidth() != width ||
++            decoder.getDecompressedImageHeight() != height) return BAD_VALUE;
++
++    // A pixel-rotating HAL must not also ask the consumer to rotate through
++    // EXIF. Stock may use 0 (undefined), 1 (normal), or 2 (horizontal mirror).
++    // A mirror remains attached to both the base and gain map; do not bake it
++    // into P010 a second time. Require explicit EXIF for nonzero rotations.
++    bool hasOrientation = false;
++    if (decoder.getEXIFSize() > 0) {
++        if (decoder.getEXIFSize() > std::numeric_limits<unsigned int>::max()) return BAD_VALUE;
++        std::unique_ptr<ExifData, decltype(&exif_data_unref)> exif(exif_data_new(), exif_data_unref);
++        if (!exif) return BAD_VALUE;
++        // Do not let libexif insert a default orientation into an absent tag.
++        exif_data_unset_option(exif.get(), EXIF_DATA_OPTION_FOLLOW_SPECIFICATION);
++        exif_data_load_data(exif.get(), static_cast<const unsigned char*>(decoder.getEXIFPtr()),
++                decoder.getEXIFSize());
++        const auto* entry = exif_content_get_entry(exif->ifd[EXIF_IFD_0], EXIF_TAG_ORIENTATION);
++        if (entry != nullptr) {
++            if (entry->format != EXIF_FORMAT_SHORT || entry->components != 1 ||
++                    entry->data == nullptr || entry->size < 2) return BAD_VALUE;
++            const auto exifOrientation = exif_get_short(entry->data,
++                    exif_data_get_byte_order(exif.get()));
++            if (exifOrientation > 2) return BAD_VALUE;
++            hasOrientation = true;
++        }
++    }
++    if (orientation != 0 && !hasOrientation) return BAD_VALUE;
++    if (orientation == 0) return OK;
++
++    uhdr_raw_image_t raw{};
++    raw.fmt = UHDR_IMG_FMT_24bppYCbCrP010;
++    raw.cg = UHDR_CG_BT_2100;
++    // The opt-in composite route only accepts HLG10 (or STANDARD mapped to it).
++    raw.ct = UHDR_CT_HLG;
++    raw.range = p010->colorRange;
++    raw.w = p010->width;
++    raw.h = p010->height;
++    raw.planes[UHDR_PLANE_Y] = p010->data;
++    raw.planes[UHDR_PLANE_UV] = p010->chroma_data;
++    raw.stride[UHDR_PLANE_Y] = p010->luma_stride;
++    raw.stride[UHDR_PLANE_UV] = p010->chroma_stride;
++    ultrahdr::uhdr_rotate_effect_t effect(orientation);
++    auto rotated = ultrahdr::apply_rotate(&effect, &raw);
++    if (!rotated || rotated->w != width || rotated->h != height ||
++            rotated->planes[UHDR_PLANE_Y] == nullptr ||
++            rotated->planes[UHDR_PLANE_UV] == nullptr) return NO_MEMORY;
++
++    p010->width = rotated->w;
++    p010->height = rotated->h;
++    p010->data = rotated->planes[UHDR_PLANE_Y];
++    p010->chroma_data = rotated->planes[UHDR_PLANE_UV];
++    p010->luma_stride = rotated->stride[UHDR_PLANE_Y];
++    p010->chroma_stride = rotated->stride[UHDR_PLANE_UV];
++    *storage = std::move(rotated);
++    return OK;
++}
++
++} // namespace android::camera3::JpegRCompositeUtils
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h b/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d3305f8c420d25f2c0e88ba23850637e93cfd72
+--- /dev/null
++++ b/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
+@@ -0,0 +1,23 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#pragma once
++
++#include <memory>
++#include <ultrahdr/ultrahdr.h>
++#include <ultrahdr/ultrahdrcommon.h>
++#include <utils/Errors.h>
++
++namespace android::camera3::JpegRCompositeUtils {
++
++// Only for an explicitly selected HAL that physically rotates its JPEG pixels
++// by JPEG_ORIENTATION while leaving P010 in sensor coordinates. This is not
++// inferred from an aspect ratio: 180-degree and square captures are ambiguous.
++// The compressed JPEG (including its EXIF/mirror flag) is never rewritten.
++status_t alignP010WithPixelRotatedJpeg(int32_t orientation, const void* jpeg, size_t jpegSize,
++        ultrahdr::jpegr_uncompressed_struct* p010,
++        std::unique_ptr<ultrahdr::uhdr_raw_image_ext_t>* storage);
++
++} // namespace android::camera3::JpegRCompositeUtils
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp b/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp
+index b9e182bc8a65375f342c95d6b5da25e4a48d42fb..b720db6654a08dc8eb2ae6289444fd77ba37cad0 100644
+--- a/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp
++++ b/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp
+@@ -111,6 +111,11 @@ bool isEnabled(const std::string& cameraId) {
+     return containsCameraId(base::GetProperty(kCameraIdsProperty, ""), cameraId);
+ }
+ 
++bool usesPixelRotatedJpeg(const std::string& cameraId) {
++    return isEnabled(cameraId) &&
++            containsCameraId(base::GetProperty(kPixelRotatedCameraIdsProperty, ""), cameraId);
++}
++
+ bool supportsConcurrentJpeg(const CameraMetadata& info, int64_t profile) {
+     auto caps = info.find(ANDROID_REQUEST_AVAILABLE_CAPABILITIES);
+     if (caps.count == 0 || std::find(caps.data.u8, caps.data.u8 + caps.count,
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeUtils.h b/services/camera/libcameraservice/utils/JpegRCompositeUtils.h
+index a1a8b0fd8ae7c9e42000e4c29a9cda436e0b8c54..6ecbb625e7d096499d7cd2964a07b03a6470ed97 100644
+--- a/services/camera/libcameraservice/utils/JpegRCompositeUtils.h
++++ b/services/camera/libcameraservice/utils/JpegRCompositeUtils.h
+@@ -15,8 +15,10 @@ namespace android::camera3::JpegRCompositeUtils {
+ 
+ // Empty by default. Only explicitly selected provider IDs may replace native JPEG_R.
+ inline constexpr char kCameraIdsProperty[] = "ro.camera.compositeJpegRIds";
++inline constexpr char kPixelRotatedCameraIdsProperty[] = "ro.camera.compositeJpegRRotateIds";
+ bool containsCameraId(std::string_view cameraIds, std::string_view cameraId);
+ bool isEnabled(const std::string& cameraId);
++bool usesPixelRotatedJpeg(const std::string& cameraId);
+ 
+ bool supportsConcurrentJpeg(const CameraMetadata& info, int64_t profile);
+ bool supportsJpegColorSpace(const CameraMetadata& info, int32_t colorSpace);
+
+From 10764a65d00917e7597233e7fdb88f1ae7fa964b Mon Sep 17 00:00:00 2001
+From: codex <codex@local>
+Date: Sat, 17 Oct 2026 15:15:06 +0800
+Subject: [PATCH 04/11] camera: Allow a device stem for the vendor camera NDK
+ client
+
+Change-Id: I72428f1b8bbb26a6c6ea2927c15d318e620b081e
+---
+ camera/ndk/Android.bp                          | 18 ++++++++++++++++--
+ .../utils/JpegRCompositeOrientation.h          |  5 +++++
+ 2 files changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/camera/ndk/Android.bp b/camera/ndk/Android.bp
+index 7ae825e6a66cde4bde91cff5b8adef4bad5ec5eb..a706e8a3585490c553a8c577873d91b151e4a439 100644
+--- a/camera/ndk/Android.bp
++++ b/camera/ndk/Android.bp
+@@ -117,8 +117,8 @@ cc_library_shared {
+     version_script: "libcamera2ndk.map.txt",
+ }
+ 
+-cc_library_shared {
+-    name: "libcamera2ndk_vendor",
++cc_defaults {
++    name: "libcamera2ndk_vendor_defaults",
+     vendor: true,
+     srcs: [
+         "NdkCameraCaptureSession.cpp",
+@@ -175,6 +175,20 @@ cc_library_shared {
+     ],
+ }
+ 
++cc_library_shared {
++    name: "libcamera2ndk_vendor",
++    defaults: ["libcamera2ndk_vendor_defaults"],
++}
++
++// Second instance for devices that must keep the AOSP client under the stock
++// vendor SONAME while the vendor blob keeps its own copy.
++cc_library_shared {
++    name: "libcamera2ndk_vendor_rothko",
++    defaults: ["libcamera2ndk_vendor_defaults"],
++    stem: "libcamera2ndk_vendor-rothko",
++    overrides: ["libcamera2ndk_vendor_vendorcompat"],
++}
++
+ cc_test {
+     name: "ACameraNdkVendorTest",
+     vendor: true,
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h b/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
+index 9d3305f8c420d25f2c0e88ba23850637e93cfd72..7de73b04fe957341a8c1f9962fd677fdf82d1085 100644
+--- a/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
++++ b/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
+@@ -6,6 +6,11 @@
+ #pragma once
+ 
+ #include <memory>
++// ultrahdr.h uses the uhdr_* image types, which ultrahdr_api.h defines. Include
++// it first so this header stays self-contained when it is pulled in before
++// jpegr.h.
++// ultrahdr_api.h lives at the libultrahdr root, not under ultrahdr/.
++#include <ultrahdr_api.h>
+ #include <ultrahdr/ultrahdr.h>
+ #include <ultrahdr/ultrahdrcommon.h>
+ #include <utils/Errors.h>
+
+From c5be6ab346549edab16159b6f9736ba60e69be4d Mon Sep 17 00:00:00 2001
+From: codex <codex@local>
+Date: Sat, 17 Oct 2026 15:31:08 +0800
+Subject: [PATCH 05/11] camera: Drop the override from the device vendor client
+
+Change-Id: Iba5eaf644d81814950621392693ffba4d2618646
+---
+ camera/ndk/Android.bp | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/camera/ndk/Android.bp b/camera/ndk/Android.bp
+index a706e8a3585490c553a8c577873d91b151e4a439..31867f8c013489cd10801436dca523d1e5f1d564 100644
+--- a/camera/ndk/Android.bp
++++ b/camera/ndk/Android.bp
+@@ -186,7 +186,6 @@ cc_library_shared {
+     name: "libcamera2ndk_vendor_rothko",
+     defaults: ["libcamera2ndk_vendor_defaults"],
+     stem: "libcamera2ndk_vendor-rothko",
+-    overrides: ["libcamera2ndk_vendor_vendorcompat"],
+ }
+ 
+ cc_test {
+
+From 598a778800330574cc3eab5c5944e103c6d6387f Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Sat, 17 Oct 2026 15:35:47 +0800
+Subject: [PATCH 06/11] Revert "camera: Drop the override from the device
+ vendor client"
+
+This reverts commit c5be6ab346549edab16159b6f9736ba60e69be4d.
+---
+ camera/ndk/Android.bp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/camera/ndk/Android.bp b/camera/ndk/Android.bp
+index 31867f8c013489cd10801436dca523d1e5f1d564..a706e8a3585490c553a8c577873d91b151e4a439 100644
+--- a/camera/ndk/Android.bp
++++ b/camera/ndk/Android.bp
+@@ -186,6 +186,7 @@ cc_library_shared {
+     name: "libcamera2ndk_vendor_rothko",
+     defaults: ["libcamera2ndk_vendor_defaults"],
+     stem: "libcamera2ndk_vendor-rothko",
++    overrides: ["libcamera2ndk_vendor_vendorcompat"],
+ }
+ 
+ cc_test {
+
+From 322a8008cc41cc8e45c62be7940eeb83316d8cfc Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Sat, 17 Oct 2026 15:35:48 +0800
+Subject: [PATCH 07/11] Revert "camera: Allow a device stem for the vendor
+ camera NDK client"
+
+This reverts commit 10764a65d00917e7597233e7fdb88f1ae7fa964b.
+---
+ camera/ndk/Android.bp                          | 18 ++----------------
+ .../utils/JpegRCompositeOrientation.h          |  5 -----
+ 2 files changed, 2 insertions(+), 21 deletions(-)
+
+diff --git a/camera/ndk/Android.bp b/camera/ndk/Android.bp
+index a706e8a3585490c553a8c577873d91b151e4a439..7ae825e6a66cde4bde91cff5b8adef4bad5ec5eb 100644
+--- a/camera/ndk/Android.bp
++++ b/camera/ndk/Android.bp
+@@ -117,8 +117,8 @@ cc_library_shared {
+     version_script: "libcamera2ndk.map.txt",
+ }
+ 
+-cc_defaults {
+-    name: "libcamera2ndk_vendor_defaults",
++cc_library_shared {
++    name: "libcamera2ndk_vendor",
+     vendor: true,
+     srcs: [
+         "NdkCameraCaptureSession.cpp",
+@@ -175,20 +175,6 @@ cc_defaults {
+     ],
+ }
+ 
+-cc_library_shared {
+-    name: "libcamera2ndk_vendor",
+-    defaults: ["libcamera2ndk_vendor_defaults"],
+-}
+-
+-// Second instance for devices that must keep the AOSP client under the stock
+-// vendor SONAME while the vendor blob keeps its own copy.
+-cc_library_shared {
+-    name: "libcamera2ndk_vendor_rothko",
+-    defaults: ["libcamera2ndk_vendor_defaults"],
+-    stem: "libcamera2ndk_vendor-rothko",
+-    overrides: ["libcamera2ndk_vendor_vendorcompat"],
+-}
+-
+ cc_test {
+     name: "ACameraNdkVendorTest",
+     vendor: true,
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h b/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
+index 7de73b04fe957341a8c1f9962fd677fdf82d1085..9d3305f8c420d25f2c0e88ba23850637e93cfd72 100644
+--- a/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
++++ b/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
+@@ -6,11 +6,6 @@
+ #pragma once
+ 
+ #include <memory>
+-// ultrahdr.h uses the uhdr_* image types, which ultrahdr_api.h defines. Include
+-// it first so this header stays self-contained when it is pulled in before
+-// jpegr.h.
+-// ultrahdr_api.h lives at the libultrahdr root, not under ultrahdr/.
+-#include <ultrahdr_api.h>
+ #include <ultrahdr/ultrahdr.h>
+ #include <ultrahdr/ultrahdrcommon.h>
+ #include <utils/Errors.h>
+
+From 275e22afe79f2a293982b4f94e1aaf09771fe050 Mon Sep 17 00:00:00 2001
+From: codex <codex@local>
+Date: Sat, 17 Oct 2026 16:00:19 +0800
+Subject: [PATCH 08/11] camera: Build a vendor client variant without the
+ gralloc importer
+
+Change-Id: I61145d9cfba86209ab6b71ec1c3654f807d1dc19
+---
+ camera/ndk/Android.bp | 28 +++++++++++++++++++++++-----
+ 1 file changed, 23 insertions(+), 5 deletions(-)
+
+diff --git a/camera/ndk/Android.bp b/camera/ndk/Android.bp
+index 7ae825e6a66cde4bde91cff5b8adef4bad5ec5eb..c3ac75c3b11a552a6c090b98ee05ffa4e4f43a1e 100644
+--- a/camera/ndk/Android.bp
++++ b/camera/ndk/Android.bp
+@@ -117,8 +117,8 @@ cc_library_shared {
+     version_script: "libcamera2ndk.map.txt",
+ }
+ 
+-cc_library_shared {
+-    name: "libcamera2ndk_vendor",
++cc_defaults {
++    name: "libcamera2ndk_vendor_defaults",
+     vendor: true,
+     srcs: [
+         "NdkCameraCaptureSession.cpp",
+@@ -164,14 +164,32 @@ cc_library_shared {
+         "libstagefright_foundation",
+         "libutils",
+     ],
++    // TODO: jchowdhary@, use header_libs instead b/131165718
++    include_dirs: [
++        "system/media/private/camera/include",
++    ],
++}
++
++cc_library_shared {
++    name: "libcamera2ndk_vendor",
++    defaults: ["libcamera2ndk_vendor_defaults"],
+     static_libs: [
+         "android.hardware.camera.common@1.0-helper",
+         "libaidlcommonsupport",
+         "libarect",
+     ],
+-    // TODO: jchowdhary@, use header_libs instead b/131165718
+-    include_dirs: [
+-        "system/media/private/camera/include",
++}
++
++// Device variant: the client does not need the provider-side gralloc importer,
++// which is the only consumer of a second graphics.common version in this graph.
++cc_library_shared {
++    name: "libcamera2ndk_vendor_rothko",
++    defaults: ["libcamera2ndk_vendor_defaults"],
++    stem: "libcamera2ndk_vendor-rothko",
++    static_libs: [
++        "android.hardware.camera.common-helper_nogralloc",
++        "libaidlcommonsupport",
++        "libarect",
+     ],
+ }
+ 
+
+From 182c808ffb9220543cbbcdc00df75c712ef6dbaa Mon Sep 17 00:00:00 2001
+From: codex <codex@local>
+Date: Sat, 17 Oct 2026 16:56:54 +0800
+Subject: [PATCH 09/11] camera: Include the ultrahdr C API before the C++
+ header
+
+Change-Id: Iff6ff0719240bba905c68102287a2a4699fe1c4f
+---
+ .../camera/libcameraservice/utils/JpegRCompositeOrientation.h    | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h b/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
+index 9d3305f8c420d25f2c0e88ba23850637e93cfd72..531c36304b60862dcf7dce1eb008605f76328645 100644
+--- a/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
++++ b/services/camera/libcameraservice/utils/JpegRCompositeOrientation.h
+@@ -6,6 +6,7 @@
+ #pragma once
+ 
+ #include <memory>
++#include <ultrahdr_api.h>
+ #include <ultrahdr/ultrahdr.h>
+ #include <ultrahdr/ultrahdrcommon.h>
+ #include <utils/Errors.h>
+
+From acf83ad0f5eb52c05a1fc6a4fb15eb2f11031e2d Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Sat, 17 Oct 2026 20:56:23 +0800
+Subject: [PATCH 10/11] camera: Fail incomplete JPEG_R frames within a bounded
+ time
+
+Change-Id: Ie1dfb0c4bb734d8b2c3727c4bd32bdbcf561f670
+---
+ .../api2/JpegRCompositeStream.cpp             | 62 ++++++++++++++++++-
+ .../api2/JpegRCompositeStream.h               | 14 ++++-
+ .../utils/JpegRCompositeUtils.cpp             |  5 ++
+ .../utils/JpegRCompositeUtils.h               |  6 ++
+ 4 files changed, 84 insertions(+), 3 deletions(-)
+
+diff --git a/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp b/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp
+index 67046b6ccac9dca8439c5e05e5c0cc08ef522e09..85cef1b17504a0414eccfc15e66d02fde0db297a 100644
+--- a/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp
++++ b/services/camera/libcameraservice/api2/JpegRCompositeStream.cpp
+@@ -123,6 +123,7 @@ void JpegRCompositeStream::compilePendingInputLocked() {
+                 (mPendingInputFrames[imgBuffer.timestamp].error)) {
+             mBlobConsumer->unlockBuffer(imgBuffer);
+         } else {
++            markInputFrameObservedLocked(imgBuffer.timestamp);
+             mPendingInputFrames[imgBuffer.timestamp].jpegBuffer = imgBuffer;
+             mBlobBufferAcquired = true;
+         }
+@@ -152,6 +153,7 @@ void JpegRCompositeStream::compilePendingInputLocked() {
+                 (mPendingInputFrames[imgBuffer.timestamp].error)) {
+             mP010Consumer->unlockBuffer(imgBuffer);
+         } else {
++            markInputFrameObservedLocked(imgBuffer.timestamp);
+             mPendingInputFrames[imgBuffer.timestamp].p010Buffer = imgBuffer;
+             mP010BufferAcquired = true;
+         }
+@@ -164,6 +166,7 @@ void JpegRCompositeStream::compilePendingInputLocked() {
+         // collection process.
+         if (it->first >= 0) {
+             auto frameNumber = std::get<0>(it->second);
++            markInputFrameObservedLocked(it->first);
+             mPendingInputFrames[it->first].frameNumber = frameNumber;
+             mPendingInputFrames[it->first].result = std::get<1>(it->second);
+             mSessionStatsBuilder.incResultCounter(false /*dropped*/);
+@@ -174,6 +177,7 @@ void JpegRCompositeStream::compilePendingInputLocked() {
+     while (!mFrameNumberMap.empty()) {
+         auto it = mFrameNumberMap.begin();
+         auto frameNumber = it->first;
++        markInputFrameObservedLocked(it->second);
+         mPendingInputFrames[it->second].frameNumber = frameNumber;
+         auto requestTimeIt = mRequestTimeMap.find(frameNumber);
+         if (requestTimeIt != mRequestTimeMap.end()) {
+@@ -206,6 +210,13 @@ void JpegRCompositeStream::compilePendingInputLocked() {
+     }
+ }
+ 
++void JpegRCompositeStream::markInputFrameObservedLocked(int64_t timestamp) {
++    auto& frame = mPendingInputFrames[timestamp];
++    if (frame.firstSeenNs < 0) {
++        frame.firstSeenNs = systemTime();
++    }
++}
++
+ bool JpegRCompositeStream::getNextReadyInputLocked(int64_t *currentTs /*inout*/) {
+     if (currentTs == nullptr) {
+         return false;
+@@ -225,6 +236,32 @@ bool JpegRCompositeStream::getNextReadyInputLocked(int64_t *currentTs /*inout*/)
+     return newInputAvailable;
+ }
+ 
++bool JpegRCompositeStream::getNextExpiredInputLocked(int64_t *timestamp /*out*/) {
++    if (timestamp == nullptr) {
++        return false;
++    }
++
++    const nsecs_t now = systemTime();
++    for (const auto& it : mPendingInputFrames) {
++        const InputFrame& frame = it.second;
++        if (frame.error || frame.errorNotified || frame.frameNumber < 0 ||
++                !JpegRCompositeUtils::isInputFrameExpired(frame.firstSeenNs, now,
++                        kInputFrameTimeoutNs)) {
++            continue;
++        }
++
++        const bool hasP010 = frame.p010Buffer.data != nullptr;
++        const bool hasJpeg = frame.jpegBuffer.data != nullptr;
++        const bool hasRequest = frame.requestTimeNs != -1;
++        const bool complete = hasP010 && hasRequest && (!mSupportInternalJpeg || hasJpeg);
++        if (!complete && (hasP010 || hasJpeg || hasRequest || frame.frameNumber >= 0)) {
++            *timestamp = it.first;
++            return true;
++        }
++    }
++    return false;
++}
++
+ int64_t JpegRCompositeStream::getNextFailingInputLocked(int64_t *currentTs /*inout*/) {
+     int64_t ret = -1;
+     if (currentTs == nullptr) {
+@@ -536,6 +573,18 @@ bool JpegRCompositeStream::threadLoop() {
+                     currentTs = INT64_MAX;
+                 }
+ 
++                int64_t expiredTs = -1;
++                if (getNextExpiredInputLocked(&expiredTs)) {
++                    auto& expired = mPendingInputFrames[expiredTs];
++                    ALOGE("%s: Timed out waiting for complete internal JPEG/P010 frame "
++                            "with timestamp: %" PRId64 " frame: %" PRId64, __FUNCTION__,
++                            expiredTs, expired.frameNumber);
++                    expired.error = true;
++                    releaseInputFrameLocked(&expired);
++                    mPendingInputFrames.erase(expiredTs);
++                    currentTs = INT64_MAX;
++                }
++
+                 auto ret = mInputReadyCondition.waitRelative(mMutex, kWaitDuration);
+                 if (ret == TIMED_OUT) {
+                     return true;
+@@ -548,12 +597,21 @@ bool JpegRCompositeStream::threadLoop() {
+         }
+     }
+ 
+-    auto res = processInputFrame(currentTs, mPendingInputFrames[currentTs]);
++    InputFrame inputFrame;
++    {
++        Mutex::Autolock l(mMutex);
++        inputFrame = mPendingInputFrames[currentTs];
++    }
++
++    auto res = processInputFrame(currentTs, inputFrame);
+     Mutex::Autolock l(mMutex);
+     if (res != OK) {
+         ALOGE("%s: Failed processing frame with timestamp: %" PRIu64 ": %s (%d)", __FUNCTION__,
+                 currentTs, strerror(-res), res);
+-        mPendingInputFrames[currentTs].error = true;
++        auto it = mPendingInputFrames.find(currentTs);
++        if (it != mPendingInputFrames.end()) {
++            it->second.error = true;
++        }
+     }
+ 
+     releaseInputFramesLocked(currentTs);
+diff --git a/services/camera/libcameraservice/api2/JpegRCompositeStream.h b/services/camera/libcameraservice/api2/JpegRCompositeStream.h
+index 8188d279d7afcfc3fc2285daa7ab20290ca678ba..caa5034259c4c179f0a361d697aec7e5b22363f4 100644
+--- a/services/camera/libcameraservice/api2/JpegRCompositeStream.h
++++ b/services/camera/libcameraservice/api2/JpegRCompositeStream.h
+@@ -87,15 +87,19 @@ private:
+         int64_t                   frameNumber;
+         int32_t                   requestId;
+         nsecs_t                   requestTimeNs;
++        // First observation of any part of this frame. This bounds only the
++        // wait for an internal-stream partner; it never creates success.
++        nsecs_t                   firstSeenNs;
+ 
+         InputFrame() : error(false), errorNotified(false), frameNumber(-1), requestId(-1),
+-            requestTimeNs(-1) { }
++            requestTimeNs(-1), firstSeenNs(-1) { }
+     };
+ 
+     status_t processInputFrame(nsecs_t ts, const InputFrame &inputFrame);
+ 
+     // Buffer/Results handling
+     void compilePendingInputLocked();
++    void markInputFrameObservedLocked(int64_t timestamp);
+     void releaseInputFrameLocked(InputFrame *inputFrame /*out*/);
+     void releaseInputFramesLocked(int64_t currentTs);
+ 
+@@ -105,10 +109,18 @@ private:
+     // Find next failing frame number with smallest timestamp and return respective frame number
+     int64_t getNextFailingInputLocked(int64_t *currentTs /*inout*/);
+ 
++    // Find an incomplete frame whose bounded wait has elapsed. The caller must
++    // release it through the normal error path.
++    bool getNextExpiredInputLocked(int64_t *timestamp /*out*/);
++
+     static void deriveDynamicRangeAndDataspace(int64_t dynamicProfile, int64_t* /*out*/dynamicRange,
+             int64_t* /*out*/dataSpace);
+ 
+     static const nsecs_t kWaitDuration = 10000000; // 10 ms
++    // No incomplete internal JPEG/P010 pair may remain pending indefinitely.
++    // The timer starts when any part of a frame is observed, not when encoding
++    // starts, and is long enough to cover normal still-capture buffer latency.
++    static const nsecs_t kInputFrameTimeoutNs = 5 * 1000000000LL;
+     static const auto kP010PixelFormat = HAL_PIXEL_FORMAT_YCBCR_P010;
+     static const auto kP010DefaultDataSpace = HAL_DATASPACE_BT2020_ITU_HLG;
+     static const auto kP010DefaultDynamicRange =
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp b/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp
+index b720db6654a08dc8eb2ae6289444fd77ba37cad0..42cc1beecfe867a21dd11fa622a98e5c995379c7 100644
+--- a/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp
++++ b/services/camera/libcameraservice/utils/JpegRCompositeUtils.cpp
+@@ -116,6 +116,11 @@ bool usesPixelRotatedJpeg(const std::string& cameraId) {
+             containsCameraId(base::GetProperty(kPixelRotatedCameraIdsProperty, ""), cameraId);
+ }
+ 
++bool isInputFrameExpired(nsecs_t firstSeenNs, nsecs_t nowNs, nsecs_t timeoutNs) {
++    if (firstSeenNs < 0 || timeoutNs <= 0 || nowNs < firstSeenNs) return false;
++    return nowNs - firstSeenNs >= timeoutNs;
++}
++
+ bool supportsConcurrentJpeg(const CameraMetadata& info, int64_t profile) {
+     auto caps = info.find(ANDROID_REQUEST_AVAILABLE_CAPABILITIES);
+     if (caps.count == 0 || std::find(caps.data.u8, caps.data.u8 + caps.count,
+diff --git a/services/camera/libcameraservice/utils/JpegRCompositeUtils.h b/services/camera/libcameraservice/utils/JpegRCompositeUtils.h
+index 6ecbb625e7d096499d7cd2964a07b03a6470ed97..a5c4787c86639b57fcd1b0171ef788e623975e0a 100644
+--- a/services/camera/libcameraservice/utils/JpegRCompositeUtils.h
++++ b/services/camera/libcameraservice/utils/JpegRCompositeUtils.h
+@@ -10,6 +10,7 @@
+ #include <string_view>
+ #include <system/graphics.h>
+ #include <utils/Errors.h>
++#include <utils/Timers.h>
+ 
+ namespace android::camera3::JpegRCompositeUtils {
+ 
+@@ -23,6 +24,11 @@ bool usesPixelRotatedJpeg(const std::string& cameraId);
+ bool supportsConcurrentJpeg(const CameraMetadata& info, int64_t profile);
+ bool supportsJpegColorSpace(const CameraMetadata& info, int32_t colorSpace);
+ 
++// A pending composite frame must not wait forever for its JPEG/P010 partner.
++// Keep this predicate independent of the stream state so the liveness contract
++// can be tested without constructing a camera device.
++bool isInputFrameExpired(nsecs_t firstSeenNs, nsecs_t nowNs, nsecs_t timeoutNs);
++
+ // Replace native JPEG_R metadata atomically, using only real P010/JPEG capabilities.
+ // Requires API3 (P010 + HAL JPEG); never enables the API0 reference fallback.
+ status_t deriveCharacteristics(CameraMetadata* info);
+
+From e5e04617427d644cb65f3c8c8e5980c68c443aa1 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Mon, 19 Oct 2026 14:40:48 +0800
+Subject: [PATCH 11/11] camera: preserve legacy window tokens in the rothko
+ vendor client
+
+The stock face HAL passes AImageReader HIDL native-handle tokens to
+ACaptureSessionOutput_create and ACameraOutputTarget_create. Treating
+these as ANativeWindow pointers crashes in configureStreamsLocked.
+
+Restore the pre-migration handle types and content comparisons only
+for libcamera2ndk_vendor_rothko. Send them through the existing AIDL
+windowHandles field supported by the camera service. Keep the V3 client
+and its existing isolated graphics dependency graph. Own copied tokens
+until lost-buffer callback messages are released, including cancellation.
+All other NDK/vendor clients retain the current Surface/ANativeWindow ABI.
+
+Validation: all six affected C++ translation units pass existing target
+compiler flags with -fsyntax-only, with and without the private macro.
+Device enrollment/authentication still requires the unified build test.
+
+Change-Id: I0738410cb088613e9f4ccea1346412048f45f180
+---
+ camera/ndk/Android.bp                         |  2 +
+ camera/ndk/NdkCameraCaptureSession.cpp        |  6 +-
+ camera/ndk/NdkCameraCaptureSession.inc        |  2 +-
+ camera/ndk/NdkCameraDevice.cpp                | 10 +--
+ camera/ndk/NdkCaptureRequest.cpp              |  2 +-
+ camera/ndk/impl/ACameraCaptureSession.cpp     |  2 +-
+ camera/ndk/impl/ACameraCaptureSession.h       | 20 +++--
+ camera/ndk/impl/ACameraCaptureSession.inc     |  2 +-
+ camera/ndk/impl/ACaptureRequest.h             |  4 +
+ .../include/camera/NdkCameraCaptureSession.h  | 10 +--
+ camera/ndk/include/camera/NdkCameraDevice.h   | 10 +--
+ .../ndk/include/camera/NdkCameraWindowType.h  |  7 ++
+ camera/ndk/include/camera/NdkCaptureRequest.h |  2 +-
+ .../impl/ACameraCaptureSessionVendor.h        | 68 ++++++++++++++++
+ camera/ndk/ndk_vendor/impl/ACameraDevice.cpp  | 68 ++++++++++------
+ camera/ndk/ndk_vendor/impl/ACameraDevice.h    |  6 +-
+ .../ndk_vendor/impl/ACameraDeviceVendor.inc   |  2 +-
+ .../ndk_vendor/impl/ACaptureRequestVendor.h   | 37 +++++++++
+ camera/ndk/ndk_vendor/impl/utils.cpp          | 81 +++++++++++++++++++
+ camera/ndk/ndk_vendor/impl/utils.h            | 65 ++++++++++++++-
+ 20 files changed, 344 insertions(+), 62 deletions(-)
+ create mode 100644 camera/ndk/ndk_vendor/impl/ACameraCaptureSessionVendor.h
+ create mode 100644 camera/ndk/ndk_vendor/impl/ACaptureRequestVendor.h
+
+diff --git a/camera/ndk/Android.bp b/camera/ndk/Android.bp
+index c3ac75c3b11a552a6c090b98ee05ffa4e4f43a1e..b8b7699b97cfa725df58ad99f45ae6eb12f6359f 100644
+--- a/camera/ndk/Android.bp
++++ b/camera/ndk/Android.bp
+@@ -186,6 +186,8 @@ cc_library_shared {
+     name: "libcamera2ndk_vendor_rothko",
+     defaults: ["libcamera2ndk_vendor_defaults"],
+     stem: "libcamera2ndk_vendor-rothko",
++    // The stock face HAL passes A14 HIDL window tokens, not ANativeWindow pointers.
++    cflags: ["-DROTHKO_LEGACY_CAMERA_WINDOW_HANDLE"],
+     static_libs: [
+         "android.hardware.camera.common-helper_nogralloc",
+         "libaidlcommonsupport",
+diff --git a/camera/ndk/NdkCameraCaptureSession.cpp b/camera/ndk/NdkCameraCaptureSession.cpp
+index 06ee714eba84fed28f6dd82b1f681bba03b0b2e4..40de27562c83ae765697c6bf6ef9d97637517e06 100644
+--- a/camera/ndk/NdkCameraCaptureSession.cpp
++++ b/camera/ndk/NdkCameraCaptureSession.cpp
+@@ -180,7 +180,7 @@ EXPORT
+ camera_status_t ACameraCaptureSessionShared_startStreaming(
+     ACameraCaptureSession* session,
+     /*optional*/ACameraCaptureSession_captureCallbacksV2* callbacks,
+-    int numOutputWindows, ANativeWindow** windows,
++    int numOutputWindows, ACameraWindowType** windows,
+     /*optional*/int* captureSequenceId) {
+     ATRACE_CALL();
+     return startStreamingTemplate(session, callbacks, numOutputWindows, windows,
+@@ -191,7 +191,7 @@ EXPORT
+ camera_status_t ACameraCaptureSessionShared_logicalCamera_startStreaming(
+     ACameraCaptureSession* session,
+     /*optional*/ACameraCaptureSession_logicalCamera_captureCallbacksV2* callbacks,
+-    int numOutputWindows, ANativeWindow** windows,
++    int numOutputWindows, ACameraWindowType** windows,
+     /*optional*/int* captureSequenceId) {
+     ATRACE_CALL();
+     return  startStreamingTemplate(session, callbacks, numOutputWindows, windows,
+@@ -250,7 +250,7 @@ camera_status_t ACameraCaptureSession_setWindowPreparedCallback(
+ EXPORT
+ camera_status_t ACameraCaptureSession_prepareWindow(
+         ACameraCaptureSession* session,
+-        ANativeWindow *window) {
++        ACameraWindowType *window) {
+     ATRACE_CALL();
+     if (session == nullptr || window == nullptr) {
+         ALOGE("%s: Error: session %p / window %p is null", __FUNCTION__, session, window);
+diff --git a/camera/ndk/NdkCameraCaptureSession.inc b/camera/ndk/NdkCameraCaptureSession.inc
+index 3112735c3956e2c30cb186ce7d4d95533ef64eb5..2f1087b7b6c641c2b5783a97bae7fcd00d120163 100644
+--- a/camera/ndk/NdkCameraCaptureSession.inc
++++ b/camera/ndk/NdkCameraCaptureSession.inc
+@@ -72,7 +72,7 @@ camera_status_t setRepeatingRequestTemplate(
+ template <class CallbackType>
+ camera_status_t startStreamingTemplate(ACameraCaptureSession* session,
+     /*optional*/CallbackType* callbacks,
+-    int numOutputWindows, ANativeWindow** windows,
++    int numOutputWindows, ACameraWindowType** windows,
+     /*optional*/int* captureSequenceId) {
+     ATRACE_CALL();
+     if (session == nullptr || windows == nullptr || numOutputWindows < 1) {
+diff --git a/camera/ndk/NdkCameraDevice.cpp b/camera/ndk/NdkCameraDevice.cpp
+index bc6b87ac7df99eb67e1ac02f72f6e3aef9d6cd9d..f77f930bbd95c4b36bcec3d62fd0a32f42596fb0 100644
+--- a/camera/ndk/NdkCameraDevice.cpp
++++ b/camera/ndk/NdkCameraDevice.cpp
+@@ -130,7 +130,7 @@ void ACaptureSessionOutputContainer_free(ACaptureSessionOutputContainer* contain
+ 
+ EXPORT
+ camera_status_t ACaptureSessionOutput_create(
+-        ANativeWindow* window, /*out*/ACaptureSessionOutput** out) {
++        ACameraWindowType* window, /*out*/ACaptureSessionOutput** out) {
+     ATRACE_CALL();
+     if (window == nullptr || out == nullptr) {
+         ALOGE("%s: Error: bad argument. window %p, out %p",
+@@ -143,7 +143,7 @@ camera_status_t ACaptureSessionOutput_create(
+ 
+ EXPORT
+ camera_status_t ACaptureSessionSharedOutput_create(
+-        ANativeWindow* window, /*out*/ACaptureSessionOutput** out) {
++        ACameraWindowType* window, /*out*/ACaptureSessionOutput** out) {
+     ATRACE_CALL();
+     if (window == nullptr || out == nullptr) {
+         ALOGE("%s: Error: bad argument. window %p, out %p",
+@@ -156,7 +156,7 @@ camera_status_t ACaptureSessionSharedOutput_create(
+ 
+ EXPORT
+ camera_status_t ACaptureSessionPhysicalOutput_create(
+-        ANativeWindow* window, const char* physicalId,
++        ACameraWindowType* window, const char* physicalId,
+         /*out*/ACaptureSessionOutput** out) {
+     ATRACE_CALL();
+     if (window == nullptr || physicalId == nullptr || out == nullptr) {
+@@ -170,7 +170,7 @@ camera_status_t ACaptureSessionPhysicalOutput_create(
+ 
+ EXPORT
+ camera_status_t ACaptureSessionSharedOutput_add(ACaptureSessionOutput *out,
+-        ANativeWindow* window) {
++        ACameraWindowType* window) {
+     ATRACE_CALL();
+     if ((window == nullptr) || (out == nullptr)) {
+         ALOGE("%s: Error: bad argument. window %p, out %p",
+@@ -196,7 +196,7 @@ camera_status_t ACaptureSessionSharedOutput_add(ACaptureSessionOutput *out,
+ 
+ EXPORT
+ camera_status_t ACaptureSessionSharedOutput_remove(ACaptureSessionOutput *out,
+-        ANativeWindow* window) {
++        ACameraWindowType* window) {
+     ATRACE_CALL();
+     if ((window == nullptr) || (out == nullptr)) {
+         ALOGE("%s: Error: bad argument. window %p, out %p",
+diff --git a/camera/ndk/NdkCaptureRequest.cpp b/camera/ndk/NdkCaptureRequest.cpp
+index b851a1d4f291e14d2eb4298cd258a40de8c63711..87de4a9ba39ae5d8f71aa54475f2567488ff1ccd 100644
+--- a/camera/ndk/NdkCaptureRequest.cpp
++++ b/camera/ndk/NdkCaptureRequest.cpp
+@@ -27,7 +27,7 @@
+ 
+ EXPORT
+ camera_status_t ACameraOutputTarget_create(
+-        ANativeWindow* window, ACameraOutputTarget** out) {
++        ACameraWindowType* window, ACameraOutputTarget** out) {
+     ATRACE_CALL();
+     if (window == nullptr) {
+         ALOGE("%s: Error: input window is null", __FUNCTION__);
+diff --git a/camera/ndk/impl/ACameraCaptureSession.cpp b/camera/ndk/impl/ACameraCaptureSession.cpp
+index 8e7264a96a86f31c21654881a101abe7ae0c5908..9d1c564c9cbcfb08b9a86922825185dbe95fbc05 100644
+--- a/camera/ndk/impl/ACameraCaptureSession.cpp
++++ b/camera/ndk/impl/ACameraCaptureSession.cpp
+@@ -178,7 +178,7 @@ camera_status_t ACameraCaptureSession::updateOutputConfiguration(ACaptureSession
+     return ret;
+ }
+ 
+-camera_status_t ACameraCaptureSession::prepare(ANativeWindow* window) {
++camera_status_t ACameraCaptureSession::prepare(ACameraWindowType* window) {
+ #ifdef __ANDROID_VNDK__
+     std::shared_ptr<acam::CameraDevice> dev = getDevicePtr();
+ #else
+diff --git a/camera/ndk/impl/ACameraCaptureSession.h b/camera/ndk/impl/ACameraCaptureSession.h
+index eb13b960886a48cc762e6566ae894b2edba161f2..fa00c4113c833fe0256116d52f00670f1b869ced 100644
+--- a/camera/ndk/impl/ACameraCaptureSession.h
++++ b/camera/ndk/impl/ACameraCaptureSession.h
+@@ -29,8 +29,11 @@
+ 
+ using namespace android;
+ 
++#if defined(__ANDROID_VNDK__) && defined(ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE)
++#include "ndk_vendor/impl/ACameraCaptureSessionVendor.h"
++#else
+ struct ACaptureSessionOutput {
+-    explicit ACaptureSessionOutput(ANativeWindow* window, bool isShared = false,
++    explicit ACaptureSessionOutput(ACameraWindowType* window, bool isShared = false,
+             const char* physicalCameraId = "") :
+             mWindow(window), mIsShared(isShared), mPhysicalCameraId(physicalCameraId) {};
+ 
+@@ -47,27 +50,28 @@ struct ACaptureSessionOutput {
+         return mWindow > other.mWindow;
+     }
+ 
+-    inline bool isWindowEqual(ANativeWindow* window) const {
++    inline bool isWindowEqual(ACameraWindowType* window) const {
+         return mWindow == window;
+     }
+ 
+     // returns true if the window was successfully added, false otherwise.
+-    inline bool addSharedWindow(ANativeWindow* window) {
++    inline bool addSharedWindow(ACameraWindowType* window) {
+         auto ret = mSharedWindows.insert(window);
+         return ret.second;
+     }
+ 
+     // returns the number of elements removed.
+-    inline size_t removeSharedWindow(ANativeWindow* window) {
++    inline size_t removeSharedWindow(ACameraWindowType* window) {
+         return mSharedWindows.erase(window);
+     }
+ 
+-    ANativeWindow* mWindow;
+-    std::set<ANativeWindow*> mSharedWindows;
++    ACameraWindowType* mWindow;
++    std::set<ACameraWindowType*> mSharedWindows;
+     bool           mIsShared;
+     int            mRotation = CAMERA3_STREAM_ROTATION_0;
+     std::string mPhysicalCameraId;
+ };
++#endif
+ 
+ struct ACaptureSessionOutputContainer {
+     std::set<ACaptureSessionOutput> mOutputs;
+@@ -146,13 +150,13 @@ struct ACameraCaptureSession : public RefBase {
+         mPreparedCb.context = context;
+         mPreparedCb.onWindowPrepared = cb;
+     }
+-    camera_status_t prepare(ANativeWindow *window);
++    camera_status_t prepare(ACameraWindowType *window);
+ 
+     ACameraDevice* getDevice();
+ 
+     template<class T>
+     camera_status_t startStreaming(/*optional*/T* callbacks,
+-            int numOutputWindows, ANativeWindow** windows, /*optional*/int* captureSequenceId);
++            int numOutputWindows, ACameraWindowType** windows, /*optional*/int* captureSequenceId);
+ 
+     camera_status_t stopStreaming();
+ 
+diff --git a/camera/ndk/impl/ACameraCaptureSession.inc b/camera/ndk/impl/ACameraCaptureSession.inc
+index 695eb378499fd807c3daac3c79d35bba3d92419c..97295ccdbc041a8daf6449079eb4e0a6af4c0860 100644
+--- a/camera/ndk/impl/ACameraCaptureSession.inc
++++ b/camera/ndk/impl/ACameraCaptureSession.inc
+@@ -82,7 +82,7 @@ camera_status_t ACameraCaptureSession::capture(
+ 
+ template <class T>
+ camera_status_t ACameraCaptureSession::startStreaming(
+-        /*optional*/T* callbacks, int numOutputWindows, ANativeWindow** windows,
++        /*optional*/T* callbacks, int numOutputWindows, ACameraWindowType** windows,
+ 	/*optional*/int* captureSequenceId)  {
+ #ifdef __ANDROID_VNDK__
+     std::shared_ptr<acam::CameraDevice> dev = getDevicePtr();
+diff --git a/camera/ndk/impl/ACaptureRequest.h b/camera/ndk/impl/ACaptureRequest.h
+index 118c2a581130d966d2467b7531995e0f9bf26681..1ef844004a6d505b68fc7cb16b51a37149fd93e7 100644
+--- a/camera/ndk/impl/ACaptureRequest.h
++++ b/camera/ndk/impl/ACaptureRequest.h
+@@ -22,6 +22,9 @@
+ 
+ using namespace android;
+ 
++#if defined(__ANDROID_VNDK__) && defined(ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE)
++#include "ndk_vendor/impl/ACaptureRequestVendor.h"
++#else
+ struct ACameraOutputTarget {
+     explicit ACameraOutputTarget(ANativeWindow* window) : mWindow(window) {};
+ 
+@@ -40,6 +43,7 @@ struct ACameraOutputTarget {
+ 
+     ANativeWindow* mWindow;
+ };
++#endif
+ 
+ struct ACameraOutputTargets {
+     std::set<ACameraOutputTarget> mOutputs;
+diff --git a/camera/ndk/include/camera/NdkCameraCaptureSession.h b/camera/ndk/include/camera/NdkCameraCaptureSession.h
+index c2aae1c74af86ca8c42e141a41b545ad3004f955..ec2741a1c12b807fc272de1683fb5ea44ccb8e3a 100644
+--- a/camera/ndk/include/camera/NdkCameraCaptureSession.h
++++ b/camera/ndk/include/camera/NdkCameraCaptureSession.h
+@@ -124,7 +124,7 @@ typedef struct ACameraCaptureSession_stateCallbacks {
+  */
+ typedef void (*ACameraCaptureSession_prepareCallback)(
+         void *context,
+-        ANativeWindow *window,
++        ACameraWindowType *window,
+         ACameraCaptureSession *session);
+ 
+ /// Enum for describing error reason in {@link ACameraCaptureFailure}
+@@ -276,7 +276,7 @@ typedef void (*ACameraCaptureSession_captureCallback_sequenceAbort)(
+  */
+ typedef void (*ACameraCaptureSession_captureCallback_bufferLost)(
+         void* context, ACameraCaptureSession* session,
+-        ACaptureRequest* request, ANativeWindow* window, int64_t frameNumber);
++        ACaptureRequest* request, ACameraWindowType* window, int64_t frameNumber);
+ 
+ /**
+  * ACaptureCaptureSession_captureCallbacks structure used in
+@@ -1098,7 +1098,7 @@ camera_status_t ACameraCaptureSession_setWindowPreparedCallback(
+  */
+ camera_status_t ACameraCaptureSession_prepareWindow(
+     ACameraCaptureSession* session,
+-    ANativeWindow *window) __INTRODUCED_IN(34);
++    ACameraWindowType *window) __INTRODUCED_IN(34);
+ 
+ /**
+  * Request continuous streaming of a sequence of images for the shared capture session
+@@ -1154,7 +1154,7 @@ camera_status_t ACameraCaptureSession_prepareWindow(
+ camera_status_t ACameraCaptureSessionShared_startStreaming(
+     ACameraCaptureSession* sharedSession,
+     /*optional*/ACameraCaptureSession_captureCallbacksV2 *callbacks,
+-    int numOutputWindows, ANativeWindow **window,
++    int numOutputWindows, ACameraWindowType **window,
+     /*optional*/int *captureSequenceId) __INTRODUCED_IN(36);
+ 
+ /**
+@@ -1216,7 +1216,7 @@ camera_status_t ACameraCaptureSessionShared_startStreaming(
+ camera_status_t ACameraCaptureSessionShared_logicalCamera_startStreaming(
+     ACameraCaptureSession* sharedSession,
+     /*optional*/ACameraCaptureSession_logicalCamera_captureCallbacksV2 *callbacks,
+-    int numOutputWindows, ANativeWindow **windows,
++    int numOutputWindows, ACameraWindowType **windows,
+     /*optional*/int *captureSequenceId) __INTRODUCED_IN(36);
+ 
+ /**
+diff --git a/camera/ndk/include/camera/NdkCameraDevice.h b/camera/ndk/include/camera/NdkCameraDevice.h
+index 8c7eb1fc32d11431df27467281dd225098571413..b74feb8568ab0e83167660b304c06da807aa37b5 100644
+--- a/camera/ndk/include/camera/NdkCameraDevice.h
++++ b/camera/ndk/include/camera/NdkCameraDevice.h
+@@ -387,7 +387,7 @@ void            ACaptureSessionOutputContainer_free(ACaptureSessionOutputContain
+  * @see ACaptureSessionOutputContainer_add
+  */
+ camera_status_t ACaptureSessionOutput_create(
+-        ANativeWindow* anw, /*out*/ACaptureSessionOutput** output) __INTRODUCED_IN(24);
++        ACameraWindowType* anw, /*out*/ACaptureSessionOutput** output) __INTRODUCED_IN(24);
+ 
+ /**
+  * Free a ACaptureSessionOutput object.
+@@ -730,7 +730,7 @@ camera_status_t ACameraDevice_createCaptureSession(
+  * @see ACaptureSessionOutputContainer_add
+  */
+ camera_status_t ACaptureSessionSharedOutput_create(
+-        ANativeWindow* anw, /*out*/ACaptureSessionOutput** output) __INTRODUCED_IN(28);
++        ACameraWindowType* anw, /*out*/ACaptureSessionOutput** output) __INTRODUCED_IN(28);
+ 
+ /**
+  * Add a native window to shared ACaptureSessionOutput.
+@@ -748,7 +748,7 @@ camera_status_t ACaptureSessionSharedOutput_create(
+  *             ACaptureSessionOutput.</li></ul>
+  */
+ camera_status_t ACaptureSessionSharedOutput_add(ACaptureSessionOutput *output,
+-        ANativeWindow *anw) __INTRODUCED_IN(28);
++        ACameraWindowType *anw) __INTRODUCED_IN(28);
+ 
+ /**
+  * Remove a native window from shared ACaptureSessionOutput.
+@@ -764,7 +764,7 @@ camera_status_t ACaptureSessionSharedOutput_add(ACaptureSessionOutput *output,
+  *             ACaptureSessionOutput.</li></ul>
+  */
+ camera_status_t ACaptureSessionSharedOutput_remove(ACaptureSessionOutput *output,
+-        ANativeWindow* anw) __INTRODUCED_IN(28);
++        ACameraWindowType* anw) __INTRODUCED_IN(28);
+ 
+ /**
+  * Create a new camera capture session similar to {@link ACameraDevice_createCaptureSession}. This
+@@ -822,7 +822,7 @@ camera_status_t ACameraDevice_createCaptureSessionWithSessionParameters(
+  * @see ACaptureSessionOutputContainer_add
+  */
+ camera_status_t ACaptureSessionPhysicalOutput_create(
+-        ANativeWindow* anw, const char* physicalId,
++        ACameraWindowType* anw, const char* physicalId,
+         /*out*/ACaptureSessionOutput** output) __INTRODUCED_IN(29);
+ 
+ /**
+diff --git a/camera/ndk/include/camera/NdkCameraWindowType.h b/camera/ndk/include/camera/NdkCameraWindowType.h
+index 22175287f21fdf8ddad6aa8dffbd39d4af2f7d8e..f4b084b711895451fc6de01ca07b6ac3ca3b14af 100644
+--- a/camera/ndk/include/camera/NdkCameraWindowType.h
++++ b/camera/ndk/include/camera/NdkCameraWindowType.h
+@@ -44,8 +44,15 @@
+  * @deprecated No longer needed. Both NDK and VNDK use ANativeWindow now.
+  *             Use ANativeWindow directly.
+  */
++// Private compatibility build for pre-migration vendor binaries. All other
++// clients retain the current ANativeWindow ABI.
++#if defined(__ANDROID_VNDK__) && defined(ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE)
++#include <cutils/native_handle.h>
++typedef const native_handle_t ACameraWindowType;
++#else
+ #include <android/native_window.h>
+ typedef ANativeWindow ACameraWindowType;
++#endif
+ 
+ /** @} */
+ 
+diff --git a/camera/ndk/include/camera/NdkCaptureRequest.h b/camera/ndk/include/camera/NdkCaptureRequest.h
+index 5ccb510fd60927c7632cdc1d18114b08d7945fe0..dc18544483bc8b5d4a23d93241d5227abb3e8962 100644
+--- a/camera/ndk/include/camera/NdkCaptureRequest.h
++++ b/camera/ndk/include/camera/NdkCaptureRequest.h
+@@ -99,7 +99,7 @@ typedef struct ACaptureRequest ACaptureRequest;
+  *
+  * @see ACaptureRequest_addTarget
+  */
+-camera_status_t ACameraOutputTarget_create(ANativeWindow* window,
++camera_status_t ACameraOutputTarget_create(ACameraWindowType* window,
+         ACameraOutputTarget** output) __INTRODUCED_IN(24);
+ 
+ /**
+diff --git a/camera/ndk/ndk_vendor/impl/ACameraCaptureSessionVendor.h b/camera/ndk/ndk_vendor/impl/ACameraCaptureSessionVendor.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..45098c3cd2e0c7fd1860873dce6bf1b5c11f75cd
+--- /dev/null
++++ b/camera/ndk/ndk_vendor/impl/ACameraCaptureSessionVendor.h
+@@ -0,0 +1,68 @@
++/*
++ * Copyright (C) 2018 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "utils.h"
++
++#include <android/binder_auto_utils.h>
++#include <string>
++#include <set>
++
++using ::android::acam::utils::native_handle_ptr_wrapper;
++
++struct ACaptureSessionOutput {
++    explicit ACaptureSessionOutput(const native_handle_t* window, bool isShared = false,
++            const char* physicalCameraId = "") :
++            mWindow(window), mIsShared(isShared), mPhysicalCameraId(physicalCameraId) {};
++
++    bool operator == (const ACaptureSessionOutput& other) const {
++        return (mWindow == other.mWindow);
++    }
++
++    bool operator != (const ACaptureSessionOutput& other) const {
++        return mWindow != other.mWindow;
++    }
++
++    bool operator < (const ACaptureSessionOutput& other) const {
++        return mWindow < other.mWindow;
++    }
++
++    bool operator > (const ACaptureSessionOutput& other) const {
++        return mWindow > other.mWindow;
++    }
++
++    inline bool isWindowEqual(ACameraWindowType* window) const {
++        return mWindow == native_handle_ptr_wrapper(window);
++    }
++
++    // returns true if the window was successfully added, false otherwise.
++    inline bool addSharedWindow(ACameraWindowType* window) {
++        auto ret = mSharedWindows.insert(window);
++        return ret.second;
++    }
++
++    // returns the number of elements removed.
++    inline size_t removeSharedWindow(ACameraWindowType* window) {
++        return mSharedWindows.erase(window);
++    }
++
++    native_handle_ptr_wrapper mWindow;
++    std::set<native_handle_ptr_wrapper> mSharedWindows;
++    bool           mIsShared;
++    int            mRotation = CAMERA3_STREAM_ROTATION_0;
++    std::string mPhysicalCameraId;
++};
++
++
+diff --git a/camera/ndk/ndk_vendor/impl/ACameraDevice.cpp b/camera/ndk/ndk_vendor/impl/ACameraDevice.cpp
+index 63fa616a1a04baab35fbfc025d8b05940ce35217..d8420dc6a44c6319c6037dab74e5a9ed7776dc62 100644
+--- a/camera/ndk/ndk_vendor/impl/ACameraDevice.cpp
++++ b/camera/ndk/ndk_vendor/impl/ACameraDevice.cpp
+@@ -232,9 +232,12 @@ camera_status_t CameraDevice::isSessionConfigurationSupported(
+         OutputConfiguration& outputStream = sessionConfig.outputStreams[index];
+         outputStream.rotation = utils::convertToAidl(output.mRotation);
+         outputStream.windowGroupId = -1;
+-        auto& surfaces = outputStream.surfaces;
+-        surfaces.reserve(output.mSharedWindows.size() + 1);
+-        surfaces.emplace_back(output.mWindow);
++        utils::appendOutputWindow(outputStream, output.mWindow);
++#ifdef ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE
++        for (const auto& window : output.mSharedWindows) {
++            utils::appendOutputWindow(outputStream, window);
++        }
++#endif
+         outputStream.physicalCameraId = output.mPhysicalCameraId;
+         index++;
+     }
+@@ -300,12 +303,10 @@ camera_status_t CameraDevice::updateOutputConfigurationLocked(ACaptureSessionOut
+ 
+     OutputConfiguration outConfig;
+     outConfig.rotation = utils::convertToAidl(output->mRotation);
+-    auto& surfaces = outConfig.surfaces;
+-    surfaces.reserve(output->mSharedWindows.size() + 1);
+-    surfaces.emplace_back(output->mWindow);
++    utils::appendOutputWindow(outConfig, output->mWindow);
+     outConfig.physicalCameraId = output->mPhysicalCameraId;
+     for (auto& anw : output->mSharedWindows) {
+-        surfaces.emplace_back(anw);
++        utils::appendOutputWindow(outConfig, anw);
+     }
+ 
+     auto remoteRet = mRemote->updateOutputConfiguration(streamId,
+@@ -342,7 +343,7 @@ camera_status_t CameraDevice::updateOutputConfigurationLocked(ACaptureSessionOut
+     return ACAMERA_OK;
+ }
+ 
+-camera_status_t CameraDevice::prepareLocked(ANativeWindow *window) {
++camera_status_t CameraDevice::prepareLocked(ACameraWindowType *window) {
+     camera_status_t ret = checkCameraClosedOrErrorLocked();
+     if (ret != ACAMERA_OK) {
+         return ret;
+@@ -354,7 +355,7 @@ camera_status_t CameraDevice::prepareLocked(ANativeWindow *window) {
+ 
+     int32_t streamId = -1;
+     for (auto& kvPair : mConfiguredOutputs) {
+-        if (window == kvPair.second.first) {
++        if (kvPair.second.first == utils::WindowHandle(window)) {
+             streamId = kvPair.first;
+             break;
+         }
+@@ -389,19 +390,19 @@ camera_status_t CameraDevice::allocateCaptureRequestLocked(
+     std::vector<int32_t> requestSurfaceIdxList;
+ 
+     for (auto& outputTarget : request->targets->mOutputs) {
+-        ANativeWindow *anw = outputTarget.mWindow;
++        utils::WindowHandle anw = outputTarget.mWindow;
+         bool found = false;
+         req->mSurfaceList.push_back(anw);
+         // lookup stream/surface ID
+         for (const auto& kvPair : mConfiguredOutputs) {
+             int streamId = kvPair.first;
+             const OutputConfiguration& outConfig = kvPair.second.second;
+-            const auto& surfaces = outConfig.surfaces;
++            const auto& surfaces = utils::getOutputWindows(outConfig);
+             for (int surfaceId = 0; surfaceId < (int) surfaces.size(); surfaceId++) {
+                 // If two window handles point to the same native window,
+                 // they have the same surfaces.
+                 auto& surface = surfaces[surfaceId];
+-                if (anw == surface.get()) {
++                if (utils::isOutputWindowEqual(anw, surface)) {
+                     found = true;
+                     requestStreamIdxList.push_back(streamId);
+                     requestSurfaceIdxList.push_back(surfaceId);
+@@ -413,7 +414,8 @@ camera_status_t CameraDevice::allocateCaptureRequestLocked(
+             }
+         }
+         if (!found) {
+-            ALOGE("Unconfigured output target %p in capture request!", anw);
++            ALOGE("Unconfigured output target %p in capture request!",
++                    static_cast<ACameraWindowType*>(anw));
+             return ACAMERA_ERROR_INVALID_PARAMETER;
+         }
+     }
+@@ -473,7 +475,7 @@ ACaptureRequest* CameraDevice::allocateACaptureRequest(sp<CaptureRequest>& req,
+     }
+     pRequest->targets = new ACameraOutputTargets();
+     for (size_t i = 0; i < req->mSurfaceList.size(); i++) {
+-        ANativeWindow *anw = req->mSurfaceList[i];
++        utils::WindowHandle anw = req->mSurfaceList[i];
+         ACameraOutputTarget outputTarget(anw);
+         pRequest->targets->mOutputs.insert(std::move(outputTarget));
+     }
+@@ -662,20 +664,23 @@ camera_status_t CameraDevice::configureStreamsLocked(const ACaptureSessionOutput
+         return ret;
+     }
+ 
+-    std::map<ANativeWindow *, OutputConfiguration> windowToConfig;
++    std::map<utils::WindowHandle, OutputConfiguration> windowToConfig;
+     for (const auto& outConfig : outputs->mOutputs) {
+-        ANativeWindow *anw = outConfig.mWindow;
++        ACameraWindowType *anw = outConfig.mWindow;
+         OutputConfiguration outConfigInsert;
+         outConfigInsert.rotation = utils::convertToAidl(outConfig.mRotation);
+         outConfigInsert.windowGroupId = -1;
+-        auto& surfaces = outConfigInsert.surfaces;
+-        surfaces.reserve(outConfig.mSharedWindows.size() + 1);
+-        surfaces.emplace_back(anw);
++        utils::appendOutputWindow(outConfigInsert, anw);
++#ifdef ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE
++        for (const auto& window : outConfig.mSharedWindows) {
++            utils::appendOutputWindow(outConfigInsert, window);
++        }
++#endif
+         outConfigInsert.physicalCameraId = outConfig.mPhysicalCameraId;
+         windowToConfig.insert({anw, std::move(outConfigInsert)});
+     }
+ 
+-    std::set<ANativeWindow *> addSet;
++    std::set<utils::WindowHandle> addSet;
+     for (auto& kvPair : windowToConfig) {
+         addSet.insert(kvPair.first);
+     }
+@@ -894,7 +899,7 @@ void CameraDevice::onCaptureErrorLocked(ErrorCode errorCode,
+         // them and try to match the surfaces in the corresponding
+         // CaptureRequest.
+         const auto& errorSurfaces =
+-                outputPairIt->second.second.surfaces;
++                utils::getOutputWindows(outputPairIt->second.second);
+         for (const auto& errorSurface : errorSurfaces) {
+             for (const auto &requestStreamAndWindowId :
+                         request->mCaptureRequest.streamAndWindowIds) {
+@@ -910,11 +915,19 @@ void CameraDevice::onCaptureErrorLocked(ErrorCode errorCode,
+                     return;
+                 }
+ 
+-                const auto &requestSurfaces = requestSurfacePairIt->second.second.surfaces;
++                const auto &requestSurfaces = utils::getOutputWindows(requestSurfacePairIt->second.second);
+                 auto& requestSurface = requestSurfaces[requestWindowId];
+ 
+                 if (requestSurface == errorSurface) {
+-                    const ANativeWindow *anw = requestSurface.get();
++                    ACameraWindowType* anw = utils::getOutputWindowForCallback(requestSurface);
++#ifdef ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE
++                    if (anw == nullptr) {
++                        ALOGE("Cannot copy the lost-buffer window token");
++                        setCameraDeviceErrorLocked(ACAMERA_ERROR_CAMERA_SERVICE);
++                        return;
++                    }
++                    auto windowOwner = sp<utils::NativeHandleOwner>::make(anw);
++#endif
+                     ALOGV("Camera %s Lost output buffer for ANW %p frame %" PRId64,
+                             getId(), anw, frameNumber);
+ 
+@@ -924,6 +937,9 @@ void CameraDevice::onCaptureErrorLocked(ErrorCode errorCode,
+                     msg->setPointer(kCallbackFpKey, (void*) onBufferLost);
+                     msg->setObject(kCaptureRequestKey, request);
+                     msg->setPointer(kAnwKey, (void*) anw);
++#ifdef ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE
++                    msg->setObject("legacyWindowOwner", windowOwner);
++#endif
+                     msg->setInt64(kFrameNumberKey, frameNumber);
+                     postSessionMsgAndCleanup(msg);
+                 }
+@@ -1133,7 +1149,7 @@ void CameraDevice::CallbackHandler::onMessageReceived(
+                     if (onWindowPrepared == nullptr) {
+                         return;
+                     }
+-                    ANativeWindow* anw;
++                    ACameraWindowType* anw;
+                     found = msg->findPointer(kAnwKey, (void**) &anw);
+                     if (!found) {
+                         ALOGE("%s: Cannot find ANativeWindow: %d!", __FUNCTION__, __LINE__);
+@@ -1390,7 +1406,7 @@ void CameraDevice::CallbackHandler::onMessageReceived(
+                         return;
+                     }
+ 
+-                    ANativeWindow* anw;
++                    ACameraWindowType* anw;
+                     found = msg->findPointer(kAnwKey, (void**) &anw);
+                     if (!found) {
+                         ALOGE("%s: Cannot find ANativeWindow!", __FUNCTION__);
+@@ -1923,7 +1939,7 @@ ScopedAStatus CameraDevice::ServiceCallback::onPrepared(int32_t streamId) {
+         return ScopedAStatus::ok();
+     }
+     // We've found the window corresponding to the surface id.
+-    const ANativeWindow *anw = it->second.first;
++    const ACameraWindowType *anw = it->second.first;
+     sp<AMessage> msg = new AMessage(kWhatPreparedCb, dev->mHandler);
+     msg->setPointer(kContextKey, session->mPreparedCb.context);
+     msg->setPointer(kAnwKey, (void *)anw);
+diff --git a/camera/ndk/ndk_vendor/impl/ACameraDevice.h b/camera/ndk/ndk_vendor/impl/ACameraDevice.h
+index 68ad613c8fa3bb576c2e74a0237f264d84ba13c6..5218fc5d0c7fc63b3e038a64ab5031d73fefbefd 100644
+--- a/camera/ndk/ndk_vendor/impl/ACameraDevice.h
++++ b/camera/ndk/ndk_vendor/impl/ACameraDevice.h
+@@ -203,13 +203,13 @@ class CameraDevice final : public std::enable_shared_from_this<CameraDevice> {
+     template<class T>
+     camera_status_t startStreamingLocked(ACameraCaptureSession* session,
+             /*optional*/T* callbacks,
+-            int numOutputWindows, ANativeWindow** windows, /*optional*/int* captureSequenceId);
++            int numOutputWindows, ACameraWindowType** windows, /*optional*/int* captureSequenceId);
+ 
+     void addRequestSettingsMetadata(ACaptureRequest *aCaptureRequest, sp<CaptureRequest> &req);
+ 
+     camera_status_t updateOutputConfigurationLocked(ACaptureSessionOutput *output);
+ 
+-    camera_status_t prepareLocked(ANativeWindow *window);
++    camera_status_t prepareLocked(ACameraWindowType *window);
+ 
+     // Since this writes to ICameraDeviceUser's fmq, clients must take care that:
+     //   a) This function is called serially.
+@@ -252,7 +252,7 @@ class CameraDevice final : public std::enable_shared_from_this<CameraDevice> {
+ 
+     // stream id -> pair of (ACameraWindowType* from application, OutputConfiguration used for
+     // camera service)
+-    std::map<int, std::pair<ANativeWindow *, OutputConfiguration>> mConfiguredOutputs;
++    std::map<int, std::pair<utils::WindowHandle, OutputConfiguration>> mConfiguredOutputs;
+ 
+     // TODO: maybe a bool will suffice for synchronous implementation?
+     std::atomic_bool mClosing;
+diff --git a/camera/ndk/ndk_vendor/impl/ACameraDeviceVendor.inc b/camera/ndk/ndk_vendor/impl/ACameraDeviceVendor.inc
+index 1f568d2c92ce2b4a65cab529eec3bba682ff29ca..5de2c0a2012f94a4968124f33bfe3ffd7f1dce2e 100644
+--- a/camera/ndk/ndk_vendor/impl/ACameraDeviceVendor.inc
++++ b/camera/ndk/ndk_vendor/impl/ACameraDeviceVendor.inc
+@@ -150,7 +150,7 @@ camera_status_t CameraDevice::submitRequestsLocked(
+ template<class T>
+ camera_status_t CameraDevice::startStreamingLocked(ACameraCaptureSession* session,
+         /*optional*/T* callbacks, int numOutputWindows,
+-        ANativeWindow** windows, /*optional*/int* captureSequenceId) {
++        ACameraWindowType** windows, /*optional*/int* captureSequenceId) {
+     camera_status_t ret = checkCameraClosedOrErrorLocked();
+     if (ret != ACAMERA_OK) {
+         ALOGE("%s: camera is in closed or error state %d", __FUNCTION__, ret);
+diff --git a/camera/ndk/ndk_vendor/impl/ACaptureRequestVendor.h b/camera/ndk/ndk_vendor/impl/ACaptureRequestVendor.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..fcb7e34bce93c6c70f6f4eb6fe696b3710e213fc
+--- /dev/null
++++ b/camera/ndk/ndk_vendor/impl/ACaptureRequestVendor.h
+@@ -0,0 +1,37 @@
++/*
++ * Copyright (C) 2018 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "utils.h"
++
++using ::android::acam::utils::native_handle_ptr_wrapper;
++struct ACameraOutputTarget {
++    explicit ACameraOutputTarget(const native_handle_t* window) : mWindow(window) {};
++
++    bool operator == (const ACameraOutputTarget& other) const {
++        return mWindow == other.mWindow;
++    }
++    bool operator != (const ACameraOutputTarget& other) const {
++        return mWindow != other.mWindow;
++    }
++    bool operator < (const ACameraOutputTarget& other) const {
++        return mWindow < other.mWindow;
++    }
++    bool operator > (const ACameraOutputTarget& other) const {
++        return mWindow > other.mWindow;
++    }
++
++    native_handle_ptr_wrapper mWindow;
++};
+diff --git a/camera/ndk/ndk_vendor/impl/utils.cpp b/camera/ndk/ndk_vendor/impl/utils.cpp
+index 3971c732ffd341b07ad6d49e82a4d0050e8b76ca..f72c84ddae0d77c2467a93b6c15e8f115db3303a 100644
+--- a/camera/ndk/ndk_vendor/impl/utils.cpp
++++ b/camera/ndk/ndk_vendor/impl/utils.cpp
+@@ -17,6 +17,9 @@
+ #define LOG_TAG "ACameraVendorUtils"
+ 
+ #include "utils.h"
++#ifdef ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE
++#include <aidlcommonsupport/NativeHandle.h>
++#endif
+ 
+ #include <utils/Log.h>
+ 
+@@ -137,6 +140,84 @@ camera_status_t convertFromAidl(Status status) {
+     return ret;
+ }
+ 
++#ifdef ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE
++bool isWindowNativeHandleEqual(const native_handle_t *nh1, const native_handle_t *nh2) {
++    if (nh1 == nullptr || nh2 == nullptr) return nh1 == nh2;
++    if (nh1->numFds !=0 || nh2->numFds !=0) {
++        ALOGE("Invalid window native handles being compared");
++        return false;
++    }
++    if (nh1->version != nh2->version || nh1->numFds != nh2->numFds ||
++        nh1->numInts != nh2->numInts) {
++        return false;
++    }
++    for (int i = 0; i < nh1->numInts; i++) {
++        if(nh1->data[i] != nh2->data[i]) {
++            return false;
++        }
++    }
++    return true;
++}
++
++bool isWindowNativeHandleEqual(const native_handle_t *nh1,
++                               const aidl::android::hardware::common::NativeHandle& nh2) {
++    native_handle_t* tempNh = makeFromAidl(nh2);
++    bool equal = tempNh != nullptr && isWindowNativeHandleEqual(nh1, tempNh);
++    native_handle_delete(tempNh);
++    return equal;
++}
++
++bool isWindowNativeHandleLessThan(const native_handle_t *nh1, const native_handle_t *nh2) {
++    if (nh1 == nullptr || nh2 == nullptr) return nh1 == nullptr && nh2 != nullptr;
++    if (isWindowNativeHandleEqual(nh1, nh2)) {
++        return false;
++    }
++    if (nh1->numInts != nh2->numInts) {
++        return nh1->numInts < nh2->numInts;
++    }
++
++    for (int i = 0; i < nh1->numInts; i++) {
++        if (nh1->data[i] != nh2->data[i]) {
++            return nh1->data[i] < nh2->data[i];
++        }
++    }
++    return false;
++}
++
++bool isWindowNativeHandleGreaterThan(const native_handle_t *nh1, const native_handle_t *nh2) {
++    return !isWindowNativeHandleLessThan(nh1, nh2) && !isWindowNativeHandleEqual(nh1, nh2);
++}
++
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++void appendOutputWindow(OutputConfiguration& config, ACameraWindowType* window) {
++    config.windowHandles.emplace_back(dupToAidl(window));
++}
++const std::vector<OutputWindow>& getOutputWindows(const OutputConfiguration& config) {
++    return config.windowHandles;
++}
++bool isOutputWindowEqual(ACameraWindowType* window, const OutputWindow& output) {
++    return isWindowNativeHandleEqual(window, output);
++}
++ACameraWindowType* getOutputWindowForCallback(const OutputWindow& output) {
++    return makeFromAidl(output);
++}
++#pragma clang diagnostic pop
++#else
++void appendOutputWindow(OutputConfiguration& config, ACameraWindowType* window) {
++    config.surfaces.emplace_back(window);
++}
++const std::vector<OutputWindow>& getOutputWindows(const OutputConfiguration& config) {
++    return config.surfaces;
++}
++bool isOutputWindowEqual(ACameraWindowType* window, const OutputWindow& output) {
++    return window == output.get();
++}
++ACameraWindowType* getOutputWindowForCallback(const OutputWindow& output) {
++    return output.get();
++}
++#endif
++
+ } // namespace utils
+ } // namespace acam
+ } // namespace android
+diff --git a/camera/ndk/ndk_vendor/impl/utils.h b/camera/ndk/ndk_vendor/impl/utils.h
+index d0dd2fcaa52fa79daa1120e8b84562bbb3fbd919..57c84d9c366296bd59325e7d2eb2a49979a0b663 100644
+--- a/camera/ndk/ndk_vendor/impl/utils.h
++++ b/camera/ndk/ndk_vendor/impl/utils.h
+@@ -18,6 +18,7 @@
+ #define CAMERA_NDK_VENDOR_UTILS_H
+ 
+ #include <CameraMetadata.h>
++#include <android/native_window_aidl.h>
+ #include <aidl/android/frameworks/cameraservice/common/Status.h>
+ #include <aidl/android/frameworks/cameraservice/device/CameraMetadata.h>
+ #include <aidl/android/frameworks/cameraservice/device/CaptureRequest.h>
+@@ -42,10 +43,72 @@ using ::android::hardware::camera::common::V1_0::helper::CameraMetadata;
+ using AidlCameraMetadata = ::aidl::android::frameworks::cameraservice::device::CameraMetadata;
+ using AidlCaptureRequest = ::aidl::android::frameworks::cameraservice::device::CaptureRequest;
+ 
++#ifdef ROTHKO_LEGACY_CAMERA_WINDOW_HANDLE
++using ::aidl::android::hardware::common::NativeHandle;
++
++bool isWindowNativeHandleEqual(const native_handle_t *nh1, const native_handle_t *nh2);
++
++bool isWindowNativeHandleEqual(const native_handle_t* nh1, const NativeHandle& nh2);
++
++bool isWindowNativeHandleLessThan(const native_handle_t *nh1, const native_handle_t *nh2);
++
++// Convenience wrapper over isWindowNativeHandleLessThan and isWindowNativeHandleEqual
++bool isWindowNativeHandleGreaterThan(const native_handle_t *nh1, const native_handle_t *nh2);
++
++// Utility class so the native_handle_t can be compared with  its contents instead
++// of just raw pointer comparisons.
++struct native_handle_ptr_wrapper {
++    const native_handle_t *mWindow = nullptr;
++
++    native_handle_ptr_wrapper(const native_handle_t *nh) : mWindow(nh) { }
++
++    native_handle_ptr_wrapper() = default;
++
++    operator const native_handle_t *() const { return mWindow; }
++
++    bool operator ==(const native_handle_ptr_wrapper other) const {
++        return isWindowNativeHandleEqual(mWindow, other.mWindow);
++    }
++
++    bool operator != (const native_handle_ptr_wrapper& other) const {
++        return !isWindowNativeHandleEqual(mWindow, other.mWindow);
++    }
++
++    bool operator < (const native_handle_ptr_wrapper& other) const {
++        return isWindowNativeHandleLessThan(mWindow, other.mWindow);
++    }
++
++    bool operator > (const native_handle_ptr_wrapper& other) const {
++        return isWindowNativeHandleGreaterThan(mWindow, other.mWindow);
++    }
++
++};
++
++using WindowHandle = native_handle_ptr_wrapper;
++using OutputWindow = ::aidl::android::hardware::common::NativeHandle;
++
++// The lost-buffer message owns its copied token even if the callback is cancelled.
++struct NativeHandleOwner : public RefBase {
++    explicit NativeHandleOwner(ACameraWindowType* window) : mWindow(window) {}
++    ~NativeHandleOwner() override {
++        native_handle_delete(const_cast<native_handle_t*>(mWindow));
++    }
++    ACameraWindowType* mWindow;
++};
++#else
++using WindowHandle = ANativeWindow*;
++using OutputWindow = ::aidl::android::view::Surface;
++#endif
++
++void appendOutputWindow(OutputConfiguration& config, ACameraWindowType* window);
++const std::vector<OutputWindow>& getOutputWindows(const OutputConfiguration& config);
++bool isOutputWindowEqual(ACameraWindowType* window, const OutputWindow& output);
++ACameraWindowType* getOutputWindowForCallback(const OutputWindow& output);
++
+ // Utility class so that CaptureRequest can be stored by sp<>
+ struct CaptureRequest: public RefBase {
+   AidlCaptureRequest mCaptureRequest;
+-  std::vector<ANativeWindow *> mSurfaceList;
++  std::vector<WindowHandle> mSurfaceList;
+   // Physical camera settings metadata is stored here, as the capture request
+   // might not contain it. That's since, fmq might have consumed it.
+   std::vector<PhysicalCameraSettings> mPhysicalCameraSettings;

@@ -1,0 +1,26 @@
+From 28f4853ffbbf0c6f6001f77120de92531d6ce61c Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Wed, 7 Oct 2026 09:10:49 +0800
+Subject: [PATCH] recovery: show current log when cache has no readable logs
+
+Change-Id: Iecd1a6fa5fe84f03ff6f4954f98bf1e4cfddcdcd
+---
+ recovery.cpp | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/recovery.cpp b/recovery.cpp
+index 44c7261f021c11bb3c02cd4e282879ae52662c97..e0a103c9d4ed467eb595e10265aad9e6e3ccfca1 100644
+--- a/recovery.cpp
++++ b/recovery.cpp
+@@ -365,8 +365,9 @@ static void choose_recovery_file(Device* device) {
+       // Add LAST_KMSG_FILE + LAST_KMSG_FILE.x
+       add_to_entries(LAST_KMSG_FILE);
+     }
+-  } else {
+-    // If cache partition is not found, view /tmp/recovery.log instead.
++  }
++  if (entries.empty()) {
++    // If no readable cache logs exist, view the current recovery log instead.
+     if (access(Paths::Get().temporary_log_file().c_str(), R_OK) == -1) {
+       return;
+     } else {

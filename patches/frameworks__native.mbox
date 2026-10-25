@@ -1,0 +1,724 @@
+From 6017a9d7df490324c45753b68e7ac116c69843e4 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Tue, 6 Oct 2026 17:57:40 +0800
+Subject: [PATCH 1/4] libgui: set BLAST dequeue count after releasing
+ initialization lock
+
+Expanded frame histories synchronously call resizeFrameEventHistory from the producer setter. initialize already holds the same nonrecursive mutex, leaving bootanimation and window creation blocked before their first frame. Move the existing default setter into onFirstRef after initialize returns, preserving the count and callback locking.
+
+Observed on rothko in two timed captures: bootanimation, Settings, SystemUI and ImageWallpaper share this self-lock stack. Build and post-fix device validation are pending.
+
+Change-Id: I35eec22fe78cf63c38a123fb46e77b5094b17ca8
+---
+ libs/gui/BLASTBufferQueue.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/libs/gui/BLASTBufferQueue.cpp b/libs/gui/BLASTBufferQueue.cpp
+index 05fbc148d2c99287b4914a7fea2025491fdbb303..bfcf136e8f3ea7544efe6a9549f4ad29c6b537af 100644
+--- a/libs/gui/BLASTBufferQueue.cpp
++++ b/libs/gui/BLASTBufferQueue.cpp
+@@ -223,9 +223,6 @@ void BLASTBufferQueue::initialize() {
+             },
+             this);
+ 
+-    // safe default, most producers are expected to override this
+-    mProducer->setMaxDequeuedBufferCount(2);
+-
+     BQA_LOGV("BLASTBufferQueue created");
+ }
+ 
+@@ -261,6 +258,9 @@ BLASTBufferQueue::~BLASTBufferQueue() {
+ 
+ void BLASTBufferQueue::onFirstRef() {
+     initialize();
++    // This can resize frame history and re-enter mMutex; initialize must return first.
++    // Safe default, most producers are expected to override this.
++    mProducer->setMaxDequeuedBufferCount(2);
+ }
+ 
+ void BLASTBufferQueue::update(const sp<SurfaceControl>& surface, uint32_t width, uint32_t height,
+
+From 5443a0b29fee221932b1b18917a178e5f7e3c17c Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Fri, 16 Oct 2026 15:01:13 +0800
+Subject: [PATCH 2/4] surfaceflinger: Add an optional cached display color
+ policy bridge
+
+Change-Id: I778328a40c82d6d939098f703232c96a38cc32ed
+---
+ .../CompositionEngine/Android.bp              |  7 ++
+ .../compositionengine/DisplayColorExtension.h | 65 +++++++++++++++++++
+ .../include/compositionengine/Output.h        |  1 +
+ .../include/compositionengine/impl/Display.h  |  1 +
+ .../CompositionEngine/src/Display.cpp         | 20 +++++-
+ .../src/DisplayColorExtension.cpp             | 17 +++++
+ .../CompositionEngine/src/Output.cpp          | 40 ++++++++++++
+ .../CompositionEngine/tests/DisplayTest.cpp   | 18 +++++
+ .../DisplayHardware/HWComposer.cpp            | 29 +++++++++
+ services/surfaceflinger/SurfaceFlinger.cpp    | 17 +++++
+ 10 files changed, 212 insertions(+), 3 deletions(-)
+ create mode 100644 services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayColorExtension.h
+ create mode 100644 services/surfaceflinger/CompositionEngine/src/DisplayColorExtension.cpp
+
+diff --git a/services/surfaceflinger/CompositionEngine/Android.bp b/services/surfaceflinger/CompositionEngine/Android.bp
+index 259e86b727818617c3ca608894a9196763cd23d4..563c99462358072c4c76821959267dec8c6ab27c 100644
+--- a/services/surfaceflinger/CompositionEngine/Android.bp
++++ b/services/surfaceflinger/CompositionEngine/Android.bp
+@@ -74,6 +74,7 @@ filegroup {
+         "src/CompositionEngine.cpp",
+         "src/Display.cpp",
+         "src/DisplayColorProfile.cpp",
++        "src/DisplayColorExtension.cpp",
+         "src/DisplaySurface.cpp",
+         "src/DumpHelpers.cpp",
+         "src/HwcAsyncWorker.cpp",
+@@ -97,10 +98,16 @@ cc_library {
+     cflags: select(soong_config_variable("surfaceflinger", "udfps_lib"), {
+         any @ flag_val: ["-DTARGET_PROVIDES_UDFPS_LIB"],
+         default: [],
++    }) + select(soong_config_variable("surfaceflinger", "display_color_lib"), {
++        any @ flag_val: ["-DTARGET_PROVIDES_DISPLAY_COLOR_LIB"],
++        default: [],
+     }),
+     whole_static_libs: select(soong_config_variable("surfaceflinger", "udfps_lib"), {
+         any @ flag_val: [flag_val],
+         default: ["surfaceflinger_udfps_lib"],
++    }) + select(soong_config_variable("surfaceflinger", "display_color_lib"), {
++        any @ flag_val: [flag_val],
++        default: [],
+     }),
+     srcs: [
+         ":libcompositionengine_sources",
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayColorExtension.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayColorExtension.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e588f7da1633f28e9918f609f241bc5a38b10abc
+--- /dev/null
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayColorExtension.h
+@@ -0,0 +1,65 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#pragma once
++
++#include <cstdint>
++#include <functional>
++#include <optional>
++#include <ui/DisplayId.h>
++#include <ui/GraphicTypes.h>
++#include <utils/Errors.h>
++
++namespace android::compositionengine {
++
++// Platform-private, compile-time device extension. This is not an OEM ABI or
++// an extension to ISurfaceComposer. The default implementation is inert.
++struct DisplayColorPolicy {
++    // Zero means no device policy. Nonzero revisions increase throughout the
++    // SF lifetime, including backend reconnect. A new revision permits one new
++    // HWC attempt even when its mode/intent equals an earlier failed selection.
++    uint64_t revision = 0;
++    std::optional<ui::RenderIntent> renderIntent;
++    bool wideColorGamut = true;
++};
++
++struct DisplayColorContent {
++    bool enabled = false;
++    bool managed = false;
++    ui::Dataspace sdrCandidate = ui::Dataspace::UNKNOWN;
++    ui::Dataspace hdrCandidate = ui::Dataspace::UNKNOWN;
++    // Existing getBestDataspace policy input, not a post-validate result.
++    bool forceHdrClientComposition = false;
++};
++
++enum class DisplayColorPowerMode { Unknown, Off, On, Doze, DozeSuspend };
++
++class DisplayColorExtension {
++public:
++    virtual ~DisplayColorExtension() = default;
++    virtual bool isEnabled() const { return false; }
++
++    // All methods may run under SF/composition locks. Implementations must
++    // only read cached policy or enqueue/coalesce bounded local state. No
++    // Binder/vendor IPC, disk access, waits, or calling invalidate inline.
++    virtual void setInvalidateCallback(std::function<void()> /*invalidate*/) {}
++    virtual void onDisplayConnected(PhysicalDisplayId, bool /*internal*/) {}
++    virtual void onDisplayDisconnected(PhysicalDisplayId) {}
++    virtual DisplayColorPolicy getPolicy(PhysicalDisplayId) const { return {}; }
++    virtual void onContent(PhysicalDisplayId, const DisplayColorContent&) {}
++    virtual void onPolicyRejected(PhysicalDisplayId, uint64_t /*revision*/) {}
++    virtual void onColorProfile(PhysicalDisplayId, uint64_t /*revision*/, ui::ColorMode,
++                                ui::Dataspace, ui::RenderIntent, status_t /*hwcResult*/) {}
++    // accepted describes the last actual HWC call, including an ON fallback.
++    // It is neither SF's requested-state cache nor a panel acknowledgement.
++    virtual void onPowerMode(PhysicalDisplayId, DisplayColorPowerMode /*requested*/,
++                             DisplayColorPowerMode /*lastAttempted*/, bool /*accepted*/) {}
++};
++
++// Device providers must isolate virtual/external displays, retain the latest
++// physical state for reconnect, and invoke invalidate only from their worker.
++DisplayColorExtension& getDisplayColorExtension();
++
++} // namespace android::compositionengine
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/Output.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/Output.h
+index 29b08875e9381237290884ec6628e0e214b3f2f6..032a50c4a502befb05d099145a1a69be84b8d202 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/Output.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/Output.h
+@@ -140,6 +140,7 @@ public:
+         ui::ColorMode mode{ui::ColorMode::NATIVE};
+         ui::Dataspace dataspace{ui::Dataspace::UNKNOWN};
+         ui::RenderIntent renderIntent{ui::RenderIntent::COLORIMETRIC};
++        uint64_t devicePolicyRevision = 0;
+     };
+ 
+     // Use internally to incrementally compute visibility/coverage
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Display.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Display.h
+index 3fd53d6b7fa25d8d08cbd82a2d242e66044ddf15..c34d33a701d986b8a53f2c744ba9c1d570cab8d3 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Display.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Display.h
+@@ -110,6 +110,7 @@ private:
+ 
+     DisplayIdVariant mIdVariant;
+     bool mIsDisconnected = false;
++    uint64_t mLastColorPolicyRevision = 0;
+     adpf::PowerAdvisor* mPowerAdvisor = nullptr;
+     int32_t mMaxLayerPictureProfiles = 0;
+ };
+diff --git a/services/surfaceflinger/CompositionEngine/src/Display.cpp b/services/surfaceflinger/CompositionEngine/src/Display.cpp
+index 5144c967ed9dc266a9af8ae4aadd8868c4106eb5..ae6c8ff20c5d1dc14d75becc47686109e646cb95 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Display.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Display.cpp
+@@ -19,6 +19,7 @@
+ #include <compositionengine/CompositionEngine.h>
+ #include <compositionengine/CompositionRefreshArgs.h>
+ #include <compositionengine/DisplayCreationArgs.h>
++#include <compositionengine/DisplayColorExtension.h>
+ #include <compositionengine/DisplaySurface.h>
+ #include <compositionengine/LayerFE.h>
+ #include <compositionengine/impl/Display.h>
+@@ -105,6 +106,12 @@ void Display::disconnect() {
+ 
+     mIsDisconnected = true;
+ 
++    if (auto& extension = getDisplayColorExtension(); extension.isEnabled()) {
++        if (const auto id = getDisplayIdVariant().and_then(asPhysicalDisplayId)) {
++            extension.onDisplayDisconnected(*id);
++        }
++    }
++
+     if (const auto id = getDisplayIdVariant().and_then(asHalDisplayId<DisplayIdVariant>)) {
+         getCompositionEngine().getHwComposer().disconnectDisplay(*id);
+     }
+@@ -126,7 +133,8 @@ void Display::setColorTransform(const compositionengine::CompositionRefreshArgs&
+ void Display::setColorProfile(const ColorProfile& colorProfile) {
+     if (colorProfile.mode == getState().colorMode &&
+         colorProfile.dataspace == getState().dataspace &&
+-        colorProfile.renderIntent == getState().renderIntent) {
++        colorProfile.renderIntent == getState().renderIntent &&
++        colorProfile.devicePolicyRevision == mLastColorPolicyRevision) {
+         return;
+     }
+ 
+@@ -139,8 +147,14 @@ void Display::setColorProfile(const ColorProfile& colorProfile) {
+ 
+     const auto physicalId = getDisplayIdVariant().and_then(asPhysicalDisplayId);
+     LOG_FATAL_IF(!physicalId);
+-    getCompositionEngine().getHwComposer().setActiveColorMode(*physicalId, colorProfile.mode,
+-                                                              colorProfile.renderIntent);
++    const auto result = getCompositionEngine().getHwComposer().setActiveColorMode(
++            *physicalId, colorProfile.mode, colorProfile.renderIntent);
++    // Keep upstream selected-state behavior, but report the real call result
++    // separately. Retry a failed equal profile only on a new policy revision.
++    mLastColorPolicyRevision = colorProfile.devicePolicyRevision;
++    getDisplayColorExtension().onColorProfile(*physicalId, colorProfile.devicePolicyRevision,
++                                             colorProfile.mode, colorProfile.dataspace,
++                                             colorProfile.renderIntent, result);
+ }
+ 
+ void Display::dump(std::string& out) const {
+diff --git a/services/surfaceflinger/CompositionEngine/src/DisplayColorExtension.cpp b/services/surfaceflinger/CompositionEngine/src/DisplayColorExtension.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..d9f191c542dce7243b73611c88aeeda2b652093e
+--- /dev/null
++++ b/services/surfaceflinger/CompositionEngine/src/DisplayColorExtension.cpp
+@@ -0,0 +1,17 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include <compositionengine/DisplayColorExtension.h>
++
++#ifndef TARGET_PROVIDES_DISPLAY_COLOR_LIB
++namespace android::compositionengine {
++
++DisplayColorExtension& getDisplayColorExtension() {
++    static DisplayColorExtension extension;
++    return extension;
++}
++
++} // namespace android::compositionengine
++#endif
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index 68092957ef1193592629daaad0ec9376803ce52d..bf9433d23835bb01c9bf1a836940a57641f4af8d 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -21,6 +21,7 @@
+ #include <compositionengine/CompositionEngine.h>
+ #include <compositionengine/CompositionRefreshArgs.h>
+ #include <compositionengine/DisplayColorProfile.h>
++#include <compositionengine/DisplayColorExtension.h>
+ #include <compositionengine/LayerFE.h>
+ #include <compositionengine/LayerFECompositionState.h>
+ #include <compositionengine/RenderSurface.h>
+@@ -1094,7 +1095,14 @@ ui::Dataspace Output::getBestDataspace(ui::Dataspace* outHdrDataSpace,
+ 
+ compositionengine::Output::ColorProfile Output::pickColorProfile(
+         const compositionengine::CompositionRefreshArgs& refreshArgs) const {
++    auto& colorExtension = getDisplayColorExtension();
++    const auto physicalId = colorExtension.isEnabled()
++            ? getDisplayIdVariant().and_then(asPhysicalDisplayId)
++            : ftl::Optional<PhysicalDisplayId>{};
+     if (refreshArgs.outputColorSetting == OutputColorSetting::kUnmanaged) {
++        if (physicalId) {
++            colorExtension.onContent(*physicalId, {.enabled = getState().isEnabled});
++        }
+         return ColorProfile{ui::ColorMode::NATIVE, ui::Dataspace::UNKNOWN,
+                             ui::RenderIntent::COLORIMETRIC};
+     }
+@@ -1103,6 +1111,23 @@ compositionengine::Output::ColorProfile Output::pickColorProfile(
+     bool isHdrClientComposition = false;
+     ui::Dataspace bestDataSpace = getBestDataspace(&hdrDataSpace, &isHdrClientComposition);
+ 
++    DisplayColorPolicy devicePolicy;
++    if (physicalId) {
++        colorExtension.onContent(*physicalId, {.enabled = getState().isEnabled,
++                                               .managed = true,
++                                               .sdrCandidate = bestDataSpace,
++                                               .hdrCandidate = hdrDataSpace,
++                                               .forceHdrClientComposition = isHdrClientComposition});
++        devicePolicy = colorExtension.getPolicy(*physicalId);
++        // Preserve the existing HDR selection. WCG only adjusts its SDR
++        // candidate when HDR is present; it is not a global color-management
++        // switch and does not classify layers a second time.
++        if (devicePolicy.revision != 0 && !devicePolicy.wideColorGamut &&
++            hdrDataSpace != ui::Dataspace::UNKNOWN) {
++            bestDataSpace = ui::Dataspace::V0_SRGB;
++        }
++    }
++
+     switch (refreshArgs.forceOutputColorMode) {
+         case ui::ColorMode::SRGB:
+             bestDataSpace = ui::Dataspace::V0_SRGB;
+@@ -1142,6 +1167,21 @@ compositionengine::Output::ColorProfile Output::pickColorProfile(
+     mDisplayColorProfile->getBestColorMode(bestDataSpace, intent, &outDataSpace, &outMode,
+                                            &outRenderIntent);
+ 
++    if (devicePolicy.revision != 0 && devicePolicy.renderIntent) {
++        ui::ColorMode deviceMode;
++        ui::Dataspace deviceDataSpace;
++        ui::RenderIntent deviceIntent;
++        mDisplayColorProfile->getBestColorMode(bestDataSpace, *devicePolicy.renderIntent,
++                                              &deviceDataSpace, &deviceMode, &deviceIntent);
++        // Do not accept getBestColorMode's UNKNOWN/NATIVE fallback as a
++        // successful application of an unsupported vendor intent.
++        if (deviceDataSpace != ui::Dataspace::UNKNOWN &&
++            deviceIntent == *devicePolicy.renderIntent) {
++            return ColorProfile{deviceMode, deviceDataSpace, deviceIntent, devicePolicy.revision};
++        }
++        colorExtension.onPolicyRejected(*physicalId, devicePolicy.revision);
++    }
++
+     return ColorProfile{outMode, outDataSpace, outRenderIntent};
+ }
+ 
+diff --git a/services/surfaceflinger/CompositionEngine/tests/DisplayTest.cpp b/services/surfaceflinger/CompositionEngine/tests/DisplayTest.cpp
+index 8211e1672d2ae178c7f347ad4b7e5578eca994da..1a7d9ead46392375a9dd386aeebe911a1f6aaad1 100644
+--- a/services/surfaceflinger/CompositionEngine/tests/DisplayTest.cpp
++++ b/services/surfaceflinger/CompositionEngine/tests/DisplayTest.cpp
+@@ -438,6 +438,24 @@ TEST_F(DisplaySetColorModeTest, setsModeUnlessNoChange) {
+     EXPECT_EQ(ui::RenderIntent::TONE_MAP_COLORIMETRIC, mDisplay->getState().renderIntent);
+ }
+ 
++TEST_F(DisplaySetColorModeTest, retriesEqualFailedProfileOnlyOnNewPolicyRevision) {
++    // The upstream selected-state cache is intentionally unchanged on failure;
++    // it must not cause a reconnect to skip a new device policy application.
++    Output::ColorProfile profile{ui::ColorMode::NATIVE, ui::Dataspace::UNKNOWN,
++                                 ui::RenderIntent::COLORIMETRIC, 1};
++    EXPECT_CALL(mHwComposer,
++                setActiveColorMode(DEFAULT_DISPLAY_ID, profile.mode, profile.renderIntent))
++            .WillOnce(Return(UNKNOWN_ERROR))
++            .WillOnce(Return(NO_ERROR));
++    mDisplay->setColorProfile(profile);
++    // Repeated frames of the same revision must not create a failure loop.
++    mDisplay->setColorProfile(profile);
++    mDisplay->setColorProfile(profile);
++    profile.devicePolicyRevision = 2;
++    mDisplay->setColorProfile(profile);
++    mDisplay->setColorProfile(profile);
++}
++
+ TEST_F(DisplaySetColorModeTest, doesNothingForVirtualDisplay) {
+     using ColorProfile = Output::ColorProfile;
+ 
+diff --git a/services/surfaceflinger/DisplayHardware/HWComposer.cpp b/services/surfaceflinger/DisplayHardware/HWComposer.cpp
+index f732d25d64345a52e0dd1e0460e6a584abdcc24c..9e4dfa34f90e37fb731a64dc9e23941d46bc9371 100644
+--- a/services/surfaceflinger/DisplayHardware/HWComposer.cpp
++++ b/services/surfaceflinger/DisplayHardware/HWComposer.cpp
+@@ -29,6 +29,7 @@
+ #include <android-base/properties.h>
+ #include <common/trace.h>
+ #include <compositionengine/Output.h>
++#include <compositionengine/DisplayColorExtension.h>
+ #include <compositionengine/OutputLayer.h>
+ #include <compositionengine/impl/OutputLayerCompositionState.h>
+ #include <ftl/concat.h>
+@@ -698,6 +699,11 @@ status_t HWComposer::executeCommands(HalDisplayId displayId) {
+ status_t HWComposer::setPowerMode(PhysicalDisplayId displayId, hal::PowerMode mode) {
+     RETURN_IF_INVALID_DISPLAY(displayId, BAD_INDEX);
+ 
++    const auto requestedMode = mode;
++    auto lastAttemptedMode = mode;
++    bool attempted = false;
++    bool accepted = false;
++
+     if (mode == hal::PowerMode::OFF) {
+         setVsyncEnabled(displayId, hal::Vsync::DISABLE);
+     }
+@@ -710,6 +716,9 @@ status_t HWComposer::setPowerMode(PhysicalDisplayId displayId, hal::PowerMode mo
+             ALOGV("setPowerMode: Calling HWC %s", to_string(mode).c_str());
+             {
+                 auto error = hwcDisplay->setPowerMode(mode);
++                attempted = true;
++                lastAttemptedMode = mode;
++                accepted = error == hal::Error::NONE;
+                 if (error != hal::Error::NONE) {
+                     LOG_HWC_ERROR(("setPowerMode(" + to_string(mode) + ")").c_str(), error,
+                                   displayId);
+@@ -730,6 +739,9 @@ status_t HWComposer::setPowerMode(PhysicalDisplayId displayId, hal::PowerMode mo
+                 }
+ 
+                 auto error = hwcDisplay->setPowerMode(mode);
++                attempted = true;
++                lastAttemptedMode = mode;
++                accepted = error == hal::Error::NONE;
+                 if (error != hal::Error::NONE) {
+                     LOG_HWC_ERROR(("setPowerMode(" + to_string(mode) + ")").c_str(), error,
+                                   displayId);
+@@ -740,6 +752,8 @@ status_t HWComposer::setPowerMode(PhysicalDisplayId displayId, hal::PowerMode mo
+                         ALOGD("%s: failed to set %s to %s. Trying again with ON", __func__,
+                               to_string(displayId).c_str(), to_string(mode).c_str());
+                         error = hwcDisplay->setPowerMode(hal::PowerMode::ON);
++                        lastAttemptedMode = hal::PowerMode::ON;
++                        accepted = error == hal::Error::NONE;
+                         if (error != hal::Error::NONE) {
+                             LOG_HWC_ERROR("setPowerMode(ON)", error, displayId);
+                         }
+@@ -752,6 +766,21 @@ status_t HWComposer::setPowerMode(PhysicalDisplayId displayId, hal::PowerMode mo
+             break;
+     }
+ 
++    if (auto& extension = compositionengine::getDisplayColorExtension();
++        attempted && extension.isEnabled()) {
++        const auto translate = [](hal::PowerMode power) {
++            using ColorPower = compositionengine::DisplayColorPowerMode;
++            switch (power) {
++                case hal::PowerMode::OFF: return ColorPower::Off;
++                case hal::PowerMode::ON: return ColorPower::On;
++                case hal::PowerMode::DOZE: return ColorPower::Doze;
++                case hal::PowerMode::DOZE_SUSPEND: return ColorPower::DozeSuspend;
++                default: return ColorPower::Unknown;
++            }
++        };
++        extension.onPowerMode(displayId, translate(requestedMode), translate(lastAttemptedMode),
++                              accepted);
++    }
+     return NO_ERROR;
+ }
+ 
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 0ab1a9b81266f63896c3f4e24fa9b6d26caef860..6ac645ae42486a64caf48dd1a116105336eae544 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -50,6 +50,7 @@
+ #include <compositionengine/CompositionRefreshArgs.h>
+ #include <compositionengine/Display.h>
+ #include <compositionengine/DisplayColorProfile.h>
++#include <compositionengine/DisplayColorExtension.h>
+ #include <compositionengine/DisplayColorProfileCreationArgs.h>
+ #include <compositionengine/DisplayCreationArgs.h>
+ #include <compositionengine/LayerFECompositionState.h>
+@@ -1067,6 +1068,17 @@ void SurfaceFlinger::init() FTL_FAKE_GUARD(kMainThreadContext) {
+ 
+     mPowerAdvisor->init();
+ 
++    const wp<SurfaceFlinger> weakThis(this);
++    compositionengine::getDisplayColorExtension().setInvalidateCallback([weakThis] {
++        // Device callbacks run off the main thread. Schedule before touching
++        // SF state rather than invoking scheduleRepaint on a Binder worker.
++        if (const auto sf = weakThis.promote()) {
++            static_cast<void>(sf->mScheduler->schedule([weakThis] {
++                if (const auto sf = weakThis.promote()) sf->scheduleRepaint();
++            }));
++        }
++    });
++
+     if (base::GetBoolProperty("service.sf.prime_shader_cache"s, true)) {
+         constexpr const char* kWhence = "primeCache";
+         setSchedFifo(false, kWhence);
+@@ -4195,6 +4207,11 @@ sp<DisplayDevice> SurfaceFlinger::setupNewDisplayDeviceInternal(
+                 compositionDisplay->getDisplayIdVariant().and_then(asPhysicalDisplayId)) {
+         const auto physicalId = *physicalIdOpt;
+ 
++        const bool internal = mPhysicalDisplays.get(physicalId)
++                                      .transform(&PhysicalDisplay::isInternal)
++                                      .value_or(false);
++        compositionengine::getDisplayColorExtension().onDisplayConnected(physicalId, internal);
++
+         creationArgs.isPrimary = physicalId == getPrimaryDisplayIdLocked();
+         creationArgs.refreshRateSelector =
+                 FTL_FAKE_GUARD(kMainThreadContext,
+
+From 7c1985563962e7d4fbf1bb750763c33c012cda88 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Fri, 16 Oct 2026 18:52:05 +0800
+Subject: [PATCH 3/4] surfaceflinger: Report the chosen dataspace to device
+ color policy
+
+Change-Id: Id39bc473e4c45e670e956f431d12a82eb2df571c
+---
+ .../compositionengine/DisplayColorExtension.h     |  3 +++
+ .../CompositionEngine/src/Output.cpp              | 15 ++++++++++-----
+ 2 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayColorExtension.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayColorExtension.h
+index e588f7da1633f28e9918f609f241bc5a38b10abc..360dfa564d0933d7f4f39c0f5164c5aedac37d8f 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayColorExtension.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayColorExtension.h
+@@ -30,6 +30,9 @@ struct DisplayColorContent {
+     bool managed = false;
+     ui::Dataspace sdrCandidate = ui::Dataspace::UNKNOWN;
+     ui::Dataspace hdrCandidate = ui::Dataspace::UNKNOWN;
++    // Candidate after force-output, WCG and legacy/native HDR decisions,
++    // before intent-to-HWC capability mapping. This is still not HWC state.
++    ui::Dataspace outputCandidate = ui::Dataspace::UNKNOWN;
+     // Existing getBestDataspace policy input, not a post-validate result.
+     bool forceHdrClientComposition = false;
+ };
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index bf9433d23835bb01c9bf1a836940a57641f4af8d..b6bdbabf3b0db0b6a9f422428a3f7ffdf3bc21a3 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -1110,14 +1110,10 @@ compositionengine::Output::ColorProfile Output::pickColorProfile(
+     ui::Dataspace hdrDataSpace;
+     bool isHdrClientComposition = false;
+     ui::Dataspace bestDataSpace = getBestDataspace(&hdrDataSpace, &isHdrClientComposition);
++    const auto sdrCandidate = bestDataSpace;
+ 
+     DisplayColorPolicy devicePolicy;
+     if (physicalId) {
+-        colorExtension.onContent(*physicalId, {.enabled = getState().isEnabled,
+-                                               .managed = true,
+-                                               .sdrCandidate = bestDataSpace,
+-                                               .hdrCandidate = hdrDataSpace,
+-                                               .forceHdrClientComposition = isHdrClientComposition});
+         devicePolicy = colorExtension.getPolicy(*physicalId);
+         // Preserve the existing HDR selection. WCG only adjusts its SDR
+         // candidate when HDR is present; it is not a global color-management
+@@ -1146,6 +1142,15 @@ compositionengine::Output::ColorProfile Output::pickColorProfile(
+         bestDataSpace = hdrDataSpace;
+     }
+ 
++    if (physicalId) {
++        colorExtension.onContent(*physicalId, {.enabled = getState().isEnabled,
++                                               .managed = true,
++                                               .sdrCandidate = sdrCandidate,
++                                               .hdrCandidate = hdrDataSpace,
++                                               .outputCandidate = bestDataSpace,
++                                               .forceHdrClientComposition = isHdrClientComposition});
++    }
++
+     ui::RenderIntent intent;
+     switch (refreshArgs.outputColorSetting) {
+         case OutputColorSetting::kManaged:
+
+From 2352df356015a1a8a4dd3ad47fac3c4b5a5de86d Mon Sep 17 00:00:00 2001
+From: codex <codex@local>
+Date: Sat, 17 Oct 2026 09:27:20 +0800
+Subject: [PATCH 4/4] surfaceflinger: Keep native HDR policy while the device
+ intent is cached
+
+The device colour worker can still report a cached SDR intent on the first
+HDR frame. Apply the native/legacy HDR tone mapping immediately instead of
+waiting for the device callback, and make the extension lookup overridable
+so the HDR colour-policy paths are covered by tests.
+
+Change-Id: Id50b1d609df913663d5f3e822280a7e0b1de2af0
+---
+ .../include/compositionengine/impl/Output.h   |  4 +
+ .../CompositionEngine/src/Output.cpp          | 12 ++-
+ .../CompositionEngine/tests/OutputTest.cpp    | 74 +++++++++++++++++++
+ services/surfaceflinger/SurfaceFlinger.cpp    |  4 +-
+ 4 files changed, 91 insertions(+), 3 deletions(-)
+
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Output.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Output.h
+index 5a4cfcd38969d171918ab85262f0f56047c752f5..48ac3717ed203598ebe3600d55e5c5e75e38d4ed 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Output.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Output.h
+@@ -22,6 +22,7 @@
+ #include <vector>
+ 
+ #include <compositionengine/CompositionEngine.h>
++#include <compositionengine/DisplayColorExtension.h>
+ #include <compositionengine/LayerFECompositionState.h>
+ #include <compositionengine/Output.h>
+ #include <compositionengine/impl/ClientCompositionRequestCache.h>
+@@ -133,6 +134,9 @@ public:
+             bool flushEvenWhenDisabled);
+ 
+ protected:
++    // Device extension access is overridable by the color-policy tests. The
++    // normal implementation still selects the process-wide optional provider.
++    virtual DisplayColorExtension& getDisplayColorExtensionForOutput() const;
+     std::unique_ptr<compositionengine::OutputLayer> createOutputLayer(const sp<LayerFE>&) const;
+     std::optional<size_t> findCurrentOutputLayerForLayer(
+             const sp<compositionengine::LayerFE>&) const;
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index b6bdbabf3b0db0b6a9f422428a3f7ffdf3bc21a3..5bcfeb546615466c114f509fb52612236cc01611 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -1093,9 +1093,13 @@ ui::Dataspace Output::getBestDataspace(ui::Dataspace* outHdrDataSpace,
+     return bestDataSpace;
+ }
+ 
++DisplayColorExtension& Output::getDisplayColorExtensionForOutput() const {
++    return compositionengine::getDisplayColorExtension();
++}
++
+ compositionengine::Output::ColorProfile Output::pickColorProfile(
+         const compositionengine::CompositionRefreshArgs& refreshArgs) const {
+-    auto& colorExtension = getDisplayColorExtension();
++    auto& colorExtension = getDisplayColorExtensionForOutput();
+     const auto physicalId = colorExtension.isEnabled()
+             ? getDisplayIdVariant().and_then(asPhysicalDisplayId)
+             : ftl::Optional<PhysicalDisplayId>{};
+@@ -1172,7 +1176,11 @@ compositionengine::Output::ColorProfile Output::pickColorProfile(
+     mDisplayColorProfile->getBestColorMode(bestDataSpace, intent, &outDataSpace, &outMode,
+                                            &outRenderIntent);
+ 
+-    if (devicePolicy.revision != 0 && devicePolicy.renderIntent) {
++    // The asynchronous device worker may still cache an SDR user intent on
++    // the first HDR frame. Preserve native/legacy/client HDR tone-map policy
++    // immediately; waiting for its callback would allow one wrong HDR profile.
++    if (hdrDataSpace == ui::Dataspace::UNKNOWN && devicePolicy.revision != 0 &&
++        devicePolicy.renderIntent) {
+         ui::ColorMode deviceMode;
+         ui::Dataspace deviceDataSpace;
+         ui::RenderIntent deviceIntent;
+diff --git a/services/surfaceflinger/CompositionEngine/tests/OutputTest.cpp b/services/surfaceflinger/CompositionEngine/tests/OutputTest.cpp
+index 3a3fc07e5d5c4b5d1970040a8b90724f75879ecf..f050e1acc6bfe8649fd2534d762b6f42d4c990e2 100644
+--- a/services/surfaceflinger/CompositionEngine/tests/OutputTest.cpp
++++ b/services/surfaceflinger/CompositionEngine/tests/OutputTest.cpp
+@@ -2229,6 +2229,15 @@ struct OutputUpdateColorProfileTest : public testing::Test {
+         // Sets up the helper functions called by the function under test to use
+         // mock implementations.
+         MOCK_METHOD1(setColorProfile, void(const ColorProfile&));
++        DisplayColorExtension* colorExtensionForTest = nullptr;
++        DisplayColorExtension& getDisplayColorExtensionForOutput() const override {
++            return colorExtensionForTest ? *colorExtensionForTest
++                                         : impl::Output::getDisplayColorExtensionForOutput();
++        }
++        ftl::Optional<DisplayIdVariant> getDisplayIdVariant() const override {
++            if (colorExtensionForTest) return DisplayIdVariant{PhysicalDisplayId::fromPort(0)};
++            return impl::Output::getDisplayIdVariant();
++        }
+     };
+ 
+     struct Layer {
+@@ -2289,6 +2298,71 @@ TEST_F(OutputUpdateColorProfileTest, setsAColorProfileWhenUnmanaged) {
+     mOutput.updateColorProfile(mRefreshArgs);
+ }
+ 
++struct OutputUpdateColorProfileTest_CachedSdrPolicy : OutputUpdateColorProfileTest {
++    struct CachedPolicy : DisplayColorExtension {
++        bool isEnabled() const override { return true; }
++        DisplayColorPolicy getPolicy(PhysicalDisplayId) const override {
++            return {.revision = 42,
++                    .renderIntent = static_cast<ui::RenderIntent>(257),
++                    .wideColorGamut = false};
++        }
++        void onContent(PhysicalDisplayId, const DisplayColorContent& content) override {
++            observed = content;
++            // Deliberately leave the cached SDR policy intact, as happens
++            // before the asynchronous device worker processes this HDR frame.
++        }
++        void onPolicyRejected(PhysicalDisplayId, uint64_t) override { ++rejected; }
++        DisplayColorContent observed;
++        int rejected = 0;
++    } extension;
++
++    OutputUpdateColorProfileTest_CachedSdrPolicy() {
++        mOutput.colorExtensionForTest = &extension;
++        mRefreshArgs.outputColorSetting = OutputColorSetting::kManaged;
++        EXPECT_CALL(mOutput, getOutputLayerCount()).WillRepeatedly(Return(1u));
++        EXPECT_CALL(*mDisplayColorProfile,
++                    getBestColorMode(_, static_cast<ui::RenderIntent>(257), _, _, _)).Times(0);
++    }
++
++    void verifyHdrFrame(ui::Dataspace hdr, bool legacy, bool client) {
++        mLayer1.mLayerFEState.dataspace = hdr;
++        mLayer1.mLayerFEState.forceClientComposition = client;
++        EXPECT_CALL(*mDisplayColorProfile, hasLegacyHdrSupport(hdr)).WillOnce(Return(legacy));
++        const bool nativeHdr = !legacy && !client;
++        const auto dataspace = nativeHdr ? hdr : ui::Dataspace::V0_SRGB;
++        const auto intent = nativeHdr ? ui::RenderIntent::TONE_MAP_COLORIMETRIC
++                                      : ui::RenderIntent::COLORIMETRIC;
++        const auto mode = nativeHdr ? (hdr == ui::Dataspace::BT2020_HLG
++                                               ? ui::ColorMode::BT2100_HLG
++                                               : ui::ColorMode::BT2100_PQ)
++                                    : ui::ColorMode::SRGB;
++        EXPECT_CALL(*mDisplayColorProfile, getBestColorMode(dataspace, intent, _, _, _))
++                .WillOnce(DoAll(SetArgPointee<2>(dataspace), SetArgPointee<3>(mode),
++                                SetArgPointee<4>(intent)));
++        EXPECT_CALL(mOutput, setColorProfile(ColorProfileEq(ColorProfile{mode, dataspace, intent})));
++        mOutput.updateColorProfile(mRefreshArgs);
++        EXPECT_EQ(hdr, extension.observed.hdrCandidate);
++        EXPECT_EQ(dataspace, extension.observed.outputCandidate);
++        EXPECT_EQ(0, extension.rejected);
++    }
++};
++
++TEST_F(OutputUpdateColorProfileTest_CachedSdrPolicy, firstPqFramePreservesNativeToneMapping) {
++    verifyHdrFrame(ui::Dataspace::BT2020_PQ, false, false);
++}
++
++TEST_F(OutputUpdateColorProfileTest_CachedSdrPolicy, firstHlgFramePreservesNativeToneMapping) {
++    verifyHdrFrame(ui::Dataspace::BT2020_HLG, false, false);
++}
++
++TEST_F(OutputUpdateColorProfileTest_CachedSdrPolicy, firstLegacyHdrFramePreservesUpstreamPolicy) {
++    verifyHdrFrame(ui::Dataspace::BT2020_PQ, true, false);
++}
++
++TEST_F(OutputUpdateColorProfileTest_CachedSdrPolicy, firstClientHdrFramePreservesUpstreamPolicy) {
++    verifyHdrFrame(ui::Dataspace::BT2020_PQ, false, true);
++}
++
+ struct OutputUpdateColorProfileTest_GetBestColorModeResultBecomesSetProfile
+       : public OutputUpdateColorProfileTest {
+     OutputUpdateColorProfileTest_GetBestColorModeResultBecomesSetProfile() {
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 6ac645ae42486a64caf48dd1a116105336eae544..894db72279e699c766d5a4e1dccf98dd23f0ec5b 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -1068,7 +1068,9 @@ void SurfaceFlinger::init() FTL_FAKE_GUARD(kMainThreadContext) {
+ 
+     mPowerAdvisor->init();
+ 
+-    const wp<SurfaceFlinger> weakThis(this);
++    // This tree builds libutils with ANDROID_UTILS_REF_BASE_DISABLE_IMPLICIT_CONSTRUCTION,
++    // so the raw-pointer wp constructor does not exist.
++    const wp<SurfaceFlinger> weakThis = wp<SurfaceFlinger>::fromExisting(this);
+     compositionengine::getDisplayColorExtension().setInvalidateCallback([weakThis] {
+         // Device callbacks run off the main thread. Schedule before touching
+         // SF state rather than invoking scheduleRepaint on a Binder worker.

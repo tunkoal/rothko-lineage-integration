@@ -1,0 +1,668 @@
+From 8601644f7c96f9bea430c43b2f45ba705e618650 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Fri, 16 Oct 2026 14:10:06 +0800
+Subject: [PATCH 1/4] hardware: Recover display mode clients after service
+ failures
+
+Use nonblocking lookup for display profiles, invalidate the matching cached binder on death, and handle business failures without crashing clients. Do not retry setters with an unknown remote result. Reject null mode payloads instead of dereferencing them.
+
+Source and diff checks only; compilation and service death/failure validation are deferred to the combined device candidate.
+
+Change-Id: Ic394f5e18ebaa0fc06f6d8f2dada4a53c8fff536
+---
+ .../java/lineageos/hardware/AIDLHelper.java   |   9 ++
+ .../hardware/LineageHardwareManager.java      | 136 +++++++++++++-----
+ 2 files changed, 112 insertions(+), 33 deletions(-)
+
+diff --git a/sdk/src/java/lineageos/hardware/AIDLHelper.java b/sdk/src/java/lineageos/hardware/AIDLHelper.java
+index 0a47311a210b3df98b9e127e69b051653a5a2af0..73f9d79def02e35de7532ce8dae005ab30e0b896 100644
+--- a/sdk/src/java/lineageos/hardware/AIDLHelper.java
++++ b/sdk/src/java/lineageos/hardware/AIDLHelper.java
+@@ -11,16 +11,25 @@ import java.util.ArrayList;
+ 
+ class AIDLHelper {
+     static DisplayMode[] fromAIDLModes(vendor.lineage.livedisplay.DisplayMode[] modes) {
++        if (modes == null) {
++            return null;
++        }
+         int size = modes.length;
+         DisplayMode[] r = new DisplayMode[size];
+         for (int i = 0; i < size; i++) {
+             vendor.lineage.livedisplay.DisplayMode m = modes[i];
++            if (m == null || m.name == null) {
++                return null;
++            }
+             r[i] = new DisplayMode(m.id, m.name);
+         }
+         return r;
+     }
+ 
+     static DisplayMode fromAIDLMode(vendor.lineage.livedisplay.DisplayMode mode) {
++        if (mode == null || mode.name == null) {
++            return null;
++        }
+         return new DisplayMode(mode.id, mode.name);
+     }
+ 
+diff --git a/sdk/src/java/lineageos/hardware/LineageHardwareManager.java b/sdk/src/java/lineageos/hardware/LineageHardwareManager.java
+index 9e1c894979c59f8d0c8115323c58d25201dc7412..4be358c15dd2aa444a5dc904b1a3f9d8150712a5 100644
+--- a/sdk/src/java/lineageos/hardware/LineageHardwareManager.java
++++ b/sdk/src/java/lineageos/hardware/LineageHardwareManager.java
+@@ -9,6 +9,7 @@ import android.content.Context;
+ import android.os.IBinder;
+ import android.os.RemoteException;
+ import android.os.ServiceManager;
++import android.os.ServiceSpecificException;
+ import android.util.ArrayMap;
+ import android.util.Log;
+ import android.util.Range;
+@@ -37,8 +38,10 @@ import vendor.lineage.touch.ITouchscreenGesture;
+ import java.lang.reflect.Field;
+ import java.util.ArrayList;
+ import java.util.Arrays;
++import java.util.Collections;
+ import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ 
+ /**
+  * Manages access to LineageOS hardware extensions
+@@ -180,7 +183,10 @@ public final class LineageHardwareManager {
+     private final ArrayMap<String, String> mDisplayModeMappings = new ArrayMap<String, String>();
+     private final boolean mFilterDisplayModes;
+ 
+-    private HashMap<Integer, IBinder> mAIDLMap = new HashMap<Integer, IBinder>();
++    private final Map<Integer, IBinder> mAIDLMap =
++            Collections.synchronizedMap(new HashMap<Integer, IBinder>());
++    private final Object mDisplayModesLock = new Object();
++    private IBinder.DeathRecipient mDisplayModesDeathRecipient;
+ 
+     /**
+      * @hide to prevent subclassing from outside of the framework
+@@ -252,6 +258,10 @@ public final class LineageHardwareManager {
+     }
+ 
+     private boolean isSupportedAIDL(int feature) {
++        if (feature == FEATURE_DISPLAY_MODES) {
++            // A restarting HAL must not permanently remove the advertised capability.
++            return ServiceManager.isDeclared(IDisplayModes.DESCRIPTOR + "/default");
++        }
+         if (!mAIDLMap.containsKey(feature)) {
+             mAIDLMap.put(feature, getAIDLService(feature));
+         }
+@@ -289,7 +299,7 @@ public final class LineageHardwareManager {
+                 return ServiceManager.waitForDeclaredService(
+                         IDisplayColorCalibration.DESCRIPTOR + "/default");
+             case FEATURE_DISPLAY_MODES:
+-                return ServiceManager.waitForDeclaredService(
++                return ServiceManager.checkService(
+                         IDisplayModes.DESCRIPTOR + "/default");
+             case FEATURE_HIGH_TOUCH_POLLING_RATE:
+                 return ServiceManager.waitForDeclaredService(
+@@ -571,19 +581,57 @@ public final class LineageHardwareManager {
+         return false;
+     }
+ 
++    private IDisplayModes getDisplayModesService() {
++        synchronized (mDisplayModesLock) {
++            IBinder binder = mAIDLMap.get(FEATURE_DISPLAY_MODES);
++            if (binder != null && binder.isBinderAlive()) {
++                return IDisplayModes.Stub.asInterface(binder);
++            }
++            if (binder != null) {
++                invalidateDisplayModesService(binder);
++            }
++
++            // Do not wait indefinitely for a declared but stopped HAL, or cache absence.
++            final IBinder service = getAIDLService(FEATURE_DISPLAY_MODES);
++            if (service == null) {
++                return null;
++            }
++            final IBinder.DeathRecipient recipient =
++                    () -> invalidateDisplayModesService(service);
++            try {
++                service.linkToDeath(recipient, 0);
++            } catch (RemoteException e) {
++                return null;
++            }
++            mDisplayModesDeathRecipient = recipient;
++            mAIDLMap.put(FEATURE_DISPLAY_MODES, service);
++            return IDisplayModes.Stub.asInterface(service);
++        }
++    }
++
++    private void invalidateDisplayModesService(IBinder service) {
++        synchronized (mDisplayModesLock) {
++            // A late death/error from an old service must not evict its replacement.
++            if (mAIDLMap.get(FEATURE_DISPLAY_MODES) == service) {
++                mAIDLMap.remove(FEATURE_DISPLAY_MODES);
++                if (mDisplayModesDeathRecipient != null) {
++                    service.unlinkToDeath(mDisplayModesDeathRecipient, 0);
++                    mDisplayModesDeathRecipient = null;
++                }
++            }
++        }
++    }
++
+     /**
+-     * @return a list of available display modes on the devices
++     * @return a list of available display modes on the devices, or null if unavailable
+      */
+     public DisplayMode[] getDisplayModes() {
+-        DisplayMode[] modes = null;
++        final IDisplayModes service = getDisplayModesService();
++        if (service == null) {
++            return null;
++        }
+         try {
+-            if (isSupportedAIDL(FEATURE_DISPLAY_MODES)) {
+-                IDisplayModes displayModes =
+-                        IDisplayModes.Stub.asInterface(mAIDLMap.get(FEATURE_DISPLAY_MODES));
+-                modes = AIDLHelper.fromAIDLModes(displayModes.getDisplayModes());
+-            }
+-        } catch (RemoteException e) {
+-        } finally {
++            final DisplayMode[] modes = AIDLHelper.fromAIDLModes(service.getDisplayModes());
+             if (modes == null) {
+                 return null;
+             }
+@@ -595,55 +643,77 @@ public final class LineageHardwareManager {
+                 }
+             }
+             return remapped.toArray(new DisplayMode[0]);
++        } catch (RemoteException e) {
++            invalidateDisplayModesService(service.asBinder());
++            Log.w(TAG, "Display modes service unavailable", e);
++        } catch (ServiceSpecificException | UnsupportedOperationException
++                | IllegalArgumentException | IllegalStateException e) {
++            Log.w(TAG, "Unable to read display modes", e);
+         }
++        return null;
+     }
+ 
+     /**
+      * @return the currently active display mode
+      */
+     public DisplayMode getCurrentDisplayMode() {
+-        DisplayMode mode = null;
++        final IDisplayModes service = getDisplayModesService();
++        if (service == null) {
++            return null;
++        }
+         try {
+-            if (isSupportedAIDL(FEATURE_DISPLAY_MODES)) {
+-                IDisplayModes displayModes =
+-                        IDisplayModes.Stub.asInterface(mAIDLMap.get(FEATURE_DISPLAY_MODES));
+-                mode = AIDLHelper.fromAIDLMode(displayModes.getCurrentDisplayMode());
+-            }
++            return remapDisplayMode(AIDLHelper.fromAIDLMode(service.getCurrentDisplayMode()));
+         } catch (RemoteException e) {
+-        } finally {
+-            return mode != null ? remapDisplayMode(mode) : null;
++            invalidateDisplayModesService(service.asBinder());
++            Log.w(TAG, "Display modes service unavailable", e);
++        } catch (ServiceSpecificException | UnsupportedOperationException
++                | IllegalArgumentException | IllegalStateException e) {
++            Log.w(TAG, "Unable to read current display mode", e);
+         }
++        return null;
+     }
+ 
+     /**
+      * @return the default display mode to be set on boot
+      */
+     public DisplayMode getDefaultDisplayMode() {
+-        DisplayMode mode = null;
++        final IDisplayModes service = getDisplayModesService();
++        if (service == null) {
++            return null;
++        }
+         try {
+-            if (isSupportedAIDL(FEATURE_DISPLAY_MODES)) {
+-                IDisplayModes displayModes =
+-                        IDisplayModes.Stub.asInterface(mAIDLMap.get(FEATURE_DISPLAY_MODES));
+-                mode = AIDLHelper.fromAIDLMode(displayModes.getDefaultDisplayMode());
+-            }
++            return remapDisplayMode(AIDLHelper.fromAIDLMode(service.getDefaultDisplayMode()));
+         } catch (RemoteException e) {
+-        } finally {
+-            return mode != null ? remapDisplayMode(mode) : null;
++            invalidateDisplayModesService(service.asBinder());
++            Log.w(TAG, "Display modes service unavailable", e);
++        } catch (ServiceSpecificException | UnsupportedOperationException
++                | IllegalArgumentException | IllegalStateException e) {
++            Log.w(TAG, "Unable to read default display mode", e);
+         }
++        return null;
+     }
+ 
+     /**
+      * @return true if setting the mode was successful
+      */
+     public boolean setDisplayMode(DisplayMode mode, boolean makeDefault) {
++        if (mode == null) {
++            return false;
++        }
++        final IDisplayModes service = getDisplayModesService();
++        if (service == null) {
++            return false;
++        }
+         try {
+-            if (isSupportedAIDL(FEATURE_DISPLAY_MODES)) {
+-                IDisplayModes displayModes =
+-                        IDisplayModes.Stub.asInterface(mAIDLMap.get(FEATURE_DISPLAY_MODES));
+-                displayModes.setDisplayMode(mode.id, makeDefault);
+-                return true;
+-            }
++            service.setDisplayMode(mode.id, makeDefault);
++            return true;
+         } catch (RemoteException e) {
++            invalidateDisplayModesService(service.asBinder());
++            // Never replay a setter: the remote operation may already have completed.
++            Log.w(TAG, "Display modes service failed while setting mode", e);
++        } catch (ServiceSpecificException | UnsupportedOperationException
++                | IllegalArgumentException | IllegalStateException e) {
++            Log.w(TAG, "Unable to set display mode " + mode.id, e);
+         }
+         return false;
+     }
+
+From 7fdff62d4761ec31565a03b81900858664082e88 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Sat, 24 Oct 2026 22:09:03 +0800
+Subject: [PATCH 2/4] health: Apply charging limit when the previous value is
+ unknown
+
+The HAL contract permits EX_ILLEGAL_STATE when it cannot determine the driver limit. Treat that specific read failure as unknown and attempt the requested write, while preserving transport, unsupported-operation and setter failures.
+
+Validated with the production Limit and ChargingControlProvider classes in a host Java harness: nine checks covering initialization, updates, reset and errors. No ROM build or device writes.
+
+Change-Id: I027887076def7247f84314da50fb457a31a00d11
+---
+ .../internal/health/ccprovider/Limit.java     | 23 ++++++++++++-------
+ 1 file changed, 15 insertions(+), 8 deletions(-)
+
+diff --git a/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java b/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java
+index fdc98a49b84ea77a5bcbc5a8c99b72dbe84ef0d9..90a8fbf315f4f69c2c67c1f5cb0cfce092e00c9e 100644
+--- a/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java
++++ b/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java
+@@ -59,16 +59,23 @@ public class Limit extends ChargingControlProvider {
+ 
+     private boolean setChargingLimit(int targetPct) {
+         try {
+-            if (mChargingControl.getChargingLimit().max != targetPct) {
+-                ChargingLimitInfo limit = new ChargingLimitInfo();
+-                if (targetPct == 100) {
+-                    limit.min = 0;
+-                } else {
+-                    limit.min = targetPct - mChargingLimitMargin;
++            try {
++                if (mChargingControl.getChargingLimit().max == targetPct) {
++                    return true;
+                 }
+-                limit.max = targetPct;
+-                mChargingControl.setChargingLimit(limit);
++            } catch (IllegalStateException e) {
++                // The HAL may be unable to determine the previous driver limit.
++                // This does not prevent applying the requested limit.
++                Log.i(TAG, "Current charging limit is unknown, applying target: " + targetPct);
+             }
++            ChargingLimitInfo limit = new ChargingLimitInfo();
++            if (targetPct == 100) {
++                limit.min = 0;
++            } else {
++                limit.min = targetPct - mChargingLimitMargin;
++            }
++            limit.max = targetPct;
++            mChargingControl.setChargingLimit(limit);
+             return true;
+         } catch (Exception e) {
+             Log.e(TAG, "Failed to set charging limit", e);
+
+From b2eb2ed68992f258848b29c85aa9a6f3abfd0644 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Sun, 25 Oct 2026 12:04:08 +0800
+Subject: [PATCH 3/4] Select charging providers only for implemented control
+ modes
+
+Change-Id: I5a00614fb30923cc84f1f02c9271b596ceddef1c
+---
+ .../health/ChargingControlController.java     | 64 +++++++++----------
+ .../internal/health/ccprovider/Limit.java     |  4 +-
+ 2 files changed, 30 insertions(+), 38 deletions(-)
+
+diff --git a/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlController.java b/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlController.java
+index b6a99ef2ff46fb7dd66527c3f86cdb983f4916b1..5f7b5e30b98596315d9c150a35d771b46c0bc789 100644
+--- a/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlController.java
++++ b/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlController.java
+@@ -108,23 +108,26 @@ public class ChargingControlController extends LineageHealthFeature {
+         mLimit = new Limit(mChargingControl, mContext);
+         mToggle = new Toggle(mChargingControl, mContext);
+ 
+-        mCurrentProvider = getProviderForMode(getMode());
+-        if (mCurrentProvider == null) {
+-            if (mLimit.isSupported()) {
+-                mCurrentProvider = mLimit;
+-            } else if (mToggle.isSupported()) {
+-                mCurrentProvider = mToggle;
+-            } else if (mDeadline.isSupported()) {
+-                mCurrentProvider = mDeadline;
++        // A HAL may expose only percentage limits, while the resource default
++        // (or a saved setting from another HAL) selects a timed mode.
++        if (getProviderForMode(mDefaultMode) == null) {
++            if (getProviderForMode(MODE_LIMIT) != null) {
++                mDefaultMode = MODE_LIMIT;
++            } else if (getProviderForMode(MODE_AUTO) != null) {
++                mDefaultMode = MODE_AUTO;
+             } else {
+                 Log.wtf(TAG, "No charging control provider is supported");
++                return;
+             }
+         }
++        if (!setMode(getMode())) {
++            setMode(mDefaultMode);
++        }
+     }
+ 
+     @Override
+     public boolean isSupported() {
+-        return mChargingControl != null;
++        return mChargingControl != null && mCurrentProvider != null;
+     }
+ 
+     public boolean isEnabled() {
+@@ -148,13 +151,20 @@ public class ChargingControlController extends LineageHealthFeature {
+             return false;
+         }
+ 
+-        mCurrentProvider = getProviderForMode(mode);
+-
+-        if (mCurrentProvider == null) {
++        ChargingControlProvider provider = getProviderForMode(mode);
++        if (provider == null) {
+             return false;
+         }
+ 
+-        putInt(LineageSettings.System.CHARGING_CONTROL_MODE, mode);
++        if (mCurrentProvider != provider) {
++            if (mCurrentProvider != null) {
++                mCurrentProvider.disable();
++            }
++            mCurrentProvider = provider;
++        }
++        if (getMode() != mode) {
++            putInt(LineageSettings.System.CHARGING_CONTROL_MODE, mode);
++        }
+         return true;
+     }
+ 
+@@ -174,9 +184,6 @@ public class ChargingControlController extends LineageHealthFeature {
+             if (mDeadline.isSupported()) {
+                 return mDeadline;
+             }
+-            if (mLimit.isSupported()) {
+-                return mLimit;
+-            }
+             if (mToggle.isSupported()) {
+                 return mToggle;
+             }
+@@ -274,7 +281,7 @@ public class ChargingControlController extends LineageHealthFeature {
+ 
+     @Override
+     public void onStart() {
+-        if (mChargingControl == null) {
++        if (!isSupported()) {
+             return;
+         }
+ 
+@@ -460,19 +467,12 @@ public class ChargingControlController extends LineageHealthFeature {
+         }
+     }
+ 
+-    /**
+-     * Whether the current charging control mode supports supports the mode.
+-     * Available modes:
+-     *     - ${@link lineageos.health.HealthInterface#MODE_AUTO}
+-     *     - ${@link lineageos.health.HealthInterface#MODE_MANUAL}
+-     *     - ${@link lineageos.health.HealthInterface#MODE_LIMIT}
+-     */
+-    private boolean isProvideSupportCCMode(int mode) {
+-        return mCurrentProvider.isChargingControlModeSupported(mode);
+-    }
+-
+     private void handleSettingChange() {
+-        int mode = getMode();
++        // Settings observers can also receive changes made outside setMode().
++        if (!setMode(getMode()) && !setMode(mDefaultMode)) {
++            Log.e(TAG, "No provider for the configured charging control mode");
++            return;
++        }
+ 
+         if (mIsEnabled != isEnabled()) {
+             mIsEnabled = isEnabled();
+@@ -495,12 +495,6 @@ public class ChargingControlController extends LineageHealthFeature {
+             }
+         }
+ 
+-        if (!isProvideSupportCCMode(mode)) {
+-            Log.e(TAG, "Current provider does not support mode: " + mode
+-                    + ", setting to default mode");
+-            setMode(mDefaultMode);
+-        }
+-
+         // Reset internal states
+         resetInternalState();
+ 
+diff --git a/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java b/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java
+index 90a8fbf315f4f69c2c67c1f5cb0cfce092e00c9e..cb9f1584ae00ccf8a6c8dc3d531834cb7717fd6e 100644
+--- a/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java
++++ b/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java
+@@ -5,9 +5,7 @@
+ 
+ package org.lineageos.platform.internal.health.ccprovider;
+ 
+-import static lineageos.health.HealthInterface.MODE_AUTO;
+ import static lineageos.health.HealthInterface.MODE_LIMIT;
+-import static lineageos.health.HealthInterface.MODE_MANUAL;
+ 
+ import android.content.Context;
+ import android.util.Log;
+@@ -95,7 +93,7 @@ public class Limit extends ChargingControlProvider {
+ 
+     @Override
+     public boolean isChargingControlModeSupported(int mode) {
+-        return mode == MODE_AUTO || mode == MODE_MANUAL || mode == MODE_LIMIT;
++        return mode == MODE_LIMIT;
+     }
+ 
+     @Override
+
+From e988298ba218ed6d803e0e6ca7eab32d02a2d6d4 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Sun, 25 Oct 2026 12:21:28 +0800
+Subject: [PATCH 4/4] Withdraw local charging control changes after feature
+ cancellation
+
+Change-Id: Iff7b662ebf0fbbccc61208b2c2139c19e0cae06c
+---
+ .../health/ChargingControlController.java     | 64 ++++++++++---------
+ .../internal/health/ccprovider/Limit.java     | 27 ++++----
+ 2 files changed, 46 insertions(+), 45 deletions(-)
+
+diff --git a/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlController.java b/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlController.java
+index 5f7b5e30b98596315d9c150a35d771b46c0bc789..b6a99ef2ff46fb7dd66527c3f86cdb983f4916b1 100644
+--- a/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlController.java
++++ b/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlController.java
+@@ -108,26 +108,23 @@ public class ChargingControlController extends LineageHealthFeature {
+         mLimit = new Limit(mChargingControl, mContext);
+         mToggle = new Toggle(mChargingControl, mContext);
+ 
+-        // A HAL may expose only percentage limits, while the resource default
+-        // (or a saved setting from another HAL) selects a timed mode.
+-        if (getProviderForMode(mDefaultMode) == null) {
+-            if (getProviderForMode(MODE_LIMIT) != null) {
+-                mDefaultMode = MODE_LIMIT;
+-            } else if (getProviderForMode(MODE_AUTO) != null) {
+-                mDefaultMode = MODE_AUTO;
++        mCurrentProvider = getProviderForMode(getMode());
++        if (mCurrentProvider == null) {
++            if (mLimit.isSupported()) {
++                mCurrentProvider = mLimit;
++            } else if (mToggle.isSupported()) {
++                mCurrentProvider = mToggle;
++            } else if (mDeadline.isSupported()) {
++                mCurrentProvider = mDeadline;
+             } else {
+                 Log.wtf(TAG, "No charging control provider is supported");
+-                return;
+             }
+         }
+-        if (!setMode(getMode())) {
+-            setMode(mDefaultMode);
+-        }
+     }
+ 
+     @Override
+     public boolean isSupported() {
+-        return mChargingControl != null && mCurrentProvider != null;
++        return mChargingControl != null;
+     }
+ 
+     public boolean isEnabled() {
+@@ -151,20 +148,13 @@ public class ChargingControlController extends LineageHealthFeature {
+             return false;
+         }
+ 
+-        ChargingControlProvider provider = getProviderForMode(mode);
+-        if (provider == null) {
++        mCurrentProvider = getProviderForMode(mode);
++
++        if (mCurrentProvider == null) {
+             return false;
+         }
+ 
+-        if (mCurrentProvider != provider) {
+-            if (mCurrentProvider != null) {
+-                mCurrentProvider.disable();
+-            }
+-            mCurrentProvider = provider;
+-        }
+-        if (getMode() != mode) {
+-            putInt(LineageSettings.System.CHARGING_CONTROL_MODE, mode);
+-        }
++        putInt(LineageSettings.System.CHARGING_CONTROL_MODE, mode);
+         return true;
+     }
+ 
+@@ -184,6 +174,9 @@ public class ChargingControlController extends LineageHealthFeature {
+             if (mDeadline.isSupported()) {
+                 return mDeadline;
+             }
++            if (mLimit.isSupported()) {
++                return mLimit;
++            }
+             if (mToggle.isSupported()) {
+                 return mToggle;
+             }
+@@ -281,7 +274,7 @@ public class ChargingControlController extends LineageHealthFeature {
+ 
+     @Override
+     public void onStart() {
+-        if (!isSupported()) {
++        if (mChargingControl == null) {
+             return;
+         }
+ 
+@@ -467,12 +460,19 @@ public class ChargingControlController extends LineageHealthFeature {
+         }
+     }
+ 
++    /**
++     * Whether the current charging control mode supports supports the mode.
++     * Available modes:
++     *     - ${@link lineageos.health.HealthInterface#MODE_AUTO}
++     *     - ${@link lineageos.health.HealthInterface#MODE_MANUAL}
++     *     - ${@link lineageos.health.HealthInterface#MODE_LIMIT}
++     */
++    private boolean isProvideSupportCCMode(int mode) {
++        return mCurrentProvider.isChargingControlModeSupported(mode);
++    }
++
+     private void handleSettingChange() {
+-        // Settings observers can also receive changes made outside setMode().
+-        if (!setMode(getMode()) && !setMode(mDefaultMode)) {
+-            Log.e(TAG, "No provider for the configured charging control mode");
+-            return;
+-        }
++        int mode = getMode();
+ 
+         if (mIsEnabled != isEnabled()) {
+             mIsEnabled = isEnabled();
+@@ -495,6 +495,12 @@ public class ChargingControlController extends LineageHealthFeature {
+             }
+         }
+ 
++        if (!isProvideSupportCCMode(mode)) {
++            Log.e(TAG, "Current provider does not support mode: " + mode
++                    + ", setting to default mode");
++            setMode(mDefaultMode);
++        }
++
+         // Reset internal states
+         resetInternalState();
+ 
+diff --git a/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java b/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java
+index cb9f1584ae00ccf8a6c8dc3d531834cb7717fd6e..fdc98a49b84ea77a5bcbc5a8c99b72dbe84ef0d9 100644
+--- a/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java
++++ b/lineage/lib/main/java/org/lineageos/platform/internal/health/ccprovider/Limit.java
+@@ -5,7 +5,9 @@
+ 
+ package org.lineageos.platform.internal.health.ccprovider;
+ 
++import static lineageos.health.HealthInterface.MODE_AUTO;
+ import static lineageos.health.HealthInterface.MODE_LIMIT;
++import static lineageos.health.HealthInterface.MODE_MANUAL;
+ 
+ import android.content.Context;
+ import android.util.Log;
+@@ -57,23 +59,16 @@ public class Limit extends ChargingControlProvider {
+ 
+     private boolean setChargingLimit(int targetPct) {
+         try {
+-            try {
+-                if (mChargingControl.getChargingLimit().max == targetPct) {
+-                    return true;
++            if (mChargingControl.getChargingLimit().max != targetPct) {
++                ChargingLimitInfo limit = new ChargingLimitInfo();
++                if (targetPct == 100) {
++                    limit.min = 0;
++                } else {
++                    limit.min = targetPct - mChargingLimitMargin;
+                 }
+-            } catch (IllegalStateException e) {
+-                // The HAL may be unable to determine the previous driver limit.
+-                // This does not prevent applying the requested limit.
+-                Log.i(TAG, "Current charging limit is unknown, applying target: " + targetPct);
++                limit.max = targetPct;
++                mChargingControl.setChargingLimit(limit);
+             }
+-            ChargingLimitInfo limit = new ChargingLimitInfo();
+-            if (targetPct == 100) {
+-                limit.min = 0;
+-            } else {
+-                limit.min = targetPct - mChargingLimitMargin;
+-            }
+-            limit.max = targetPct;
+-            mChargingControl.setChargingLimit(limit);
+             return true;
+         } catch (Exception e) {
+             Log.e(TAG, "Failed to set charging limit", e);
+@@ -93,7 +88,7 @@ public class Limit extends ChargingControlProvider {
+ 
+     @Override
+     public boolean isChargingControlModeSupported(int mode) {
+-        return mode == MODE_LIMIT;
++        return mode == MODE_AUTO || mode == MODE_MANUAL || mode == MODE_LIMIT;
+     }
+ 
+     @Override

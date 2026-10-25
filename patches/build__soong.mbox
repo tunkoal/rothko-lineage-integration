@@ -1,0 +1,59 @@
+From 50e5622d6bd3a1ac5ec333d1b035ca9edb5d2f9e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Sim=C3=A3o=20Gomes=20Viana?= <devel@superboring.dev>
+Date: Fri, 26 Dec 2025 22:56:57 +0100
+Subject: [PATCH 1/2] ci_tests: Skip host paths from out-of-tree OUT_DIR
+
+When building with an out-of-tree OUT_DIR, the productOut prefix
+doesn't match host module paths, leaving f as an absolute path.
+This causes PathForModuleOut to fail validation since absolute
+paths are only allowed at position 0 of pathComponents.
+
+Skip these entries to avoid the validation error.
+
+Change-Id: Ic110ad2ebd754f169bfb5aad1dc02267
+---
+ ci_tests/ci_test_package_zip.go | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/ci_tests/ci_test_package_zip.go b/ci_tests/ci_test_package_zip.go
+index 7cd03c684be581a8c9deea75371e4563d3ea5158..30348c1368aa1f79e5f739772ce2765bec61c8e6 100644
+--- a/ci_tests/ci_test_package_zip.go
++++ b/ci_tests/ci_test_package_zip.go
+@@ -301,6 +301,10 @@ func extendBuilderCommand(ctx android.ModuleContext, m android.ModuleProxy, buil
+ 		if strings.HasPrefix(f, "out") {
+ 			continue
+ 		}
++		// Skip paths from out-of-tree OUT_DIR that weren't trimmed
++		if strings.HasPrefix(f, ctx.Config().OutDir()) {
++			continue
++		}
+ 		if strings.HasPrefix(f, "system/") {
+ 			f = strings.Replace(f, "system/", "DATA/", 1)
+ 		}
+
+From e4403ac5df4159b33bf96a8f8f756baaa2dc823a Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Mon, 5 Oct 2026 02:37:01 +0800
+Subject: [PATCH 2/2] Allow optional Soong runtime memory limit
+
+Pass SOONG_GOMEMLIMIT through the hermetic primary builder environment as GOMEMLIMIT. With no setting, upstream behavior stays unchanged. Adapt only the memory-limit portion of SherlockChiang/aviumui-apollon-overlay patches/0003-soong-memory-limits.patch; no GOGC passthrough or Blueprint changes.
+
+Change-Id: Id940ada331f4f9b818c20373a0170a17a946d6e3
+---
+ ui/build/soong.go | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/ui/build/soong.go b/ui/build/soong.go
+index c9b303c5bf7c217ebe362c788810a4e031e26333..e7e3ce497744d8e35935165f14887296b9e083cd 100644
+--- a/ui/build/soong.go
++++ b/ui/build/soong.go
+@@ -226,6 +226,9 @@ func (pb PrimaryBuilderFactory) primaryBuilderInvocation(config Config) bootstra
+ 
+ 	commonArgs = append(commonArgs, "-l", filepath.Join(pb.config.FileListDir(), "Android.bp.list"))
+ 	invocationEnv := make(map[string]string)
++	if goMemLimit := os.Getenv("SOONG_GOMEMLIMIT"); goMemLimit != "" {
++		invocationEnv["GOMEMLIMIT"] = goMemLimit
++	}
+ 	if pb.debugPort != "" {
+ 		//debug mode
+ 		commonArgs = append(commonArgs, "--delve_listen", pb.debugPort,

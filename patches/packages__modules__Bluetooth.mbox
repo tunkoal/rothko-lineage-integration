@@ -1,0 +1,41 @@
+From c767f5f3b2f4714255c32f9fe1b8ab1cf98cb9b6 Mon Sep 17 00:00:00 2001
+From: tunkoal <tunkoal@163.com>
+Date: Sat, 17 Oct 2026 22:23:06 +0800
+Subject: [PATCH] Bluetooth: Allow devices to disable the AOSP audio HAL
+
+Change-Id: Id7f7aea37f0ec7db3567e3cdce2175c77fe03da1
+---
+ system/audio_bluetooth_hw/Android.bp | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/system/audio_bluetooth_hw/Android.bp b/system/audio_bluetooth_hw/Android.bp
+index 1b8e850160f5cf20d45d9ab56b4b1410ce1d9a44..bcd72133ca8620a5bc12a8aa0eb826ee1d2ff4dd 100644
+--- a/system/audio_bluetooth_hw/Android.bp
++++ b/system/audio_bluetooth_hw/Android.bp
+@@ -18,8 +18,25 @@ cc_defaults {
+     ],
+ }
+ 
+-cc_library_shared {
++soong_config_module_type {
++    name: "audio_bluetooth_hw_shared",
++    module_type: "cc_library_shared",
++    config_namespace: "audio_bluetooth_hw",
++    bool_variables: ["use_stock_hal"],
++    properties: ["enabled"],
++}
++
++audio_bluetooth_hw_shared {
+     name: "audio.bluetooth.default",
++    // Devices that provide a stock MTK Bluetooth audio HAL disable the A16
++    // source implementation, whose generic session binding is incompatible
++    // with the MTK BluetoothAudioProvider.
++    enabled: true,
++    soong_config_variables: {
++        use_stock_hal: {
++            enabled: false,
++        },
++    },
+     defaults: [
+         "audio_bluetooth_hw_defaults",
+         "latest_android_hardware_audio_common_ndk_shared",
